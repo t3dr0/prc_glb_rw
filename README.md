@@ -7,9 +7,11 @@ PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds
 tools built on nanoPRC's public C API, with glTF read and written through
 [cgltf](https://github.com/jkuhlmann/cgltf).
 
-**Status: skeleton.** Both tools build, report their versions and check their command lines, but
-do not convert yet. What follows describes the intended behaviour, and is updated as each part
-lands.
+**Status: in development.** Both tools build, report their versions and check their command lines,
+but do not convert yet. The shared code underneath them reads and writes glTF to and from a neutral
+scene (nodes, meshes, materials, vertex colours and texture coordinates; textures and Draco to
+come), with unit tests; the PRC side is next. What follows describes the intended behaviour, and is
+updated as each part lands.
 
 | Tool | Direction | What it will do |
 |---|---|---|
@@ -77,6 +79,28 @@ ctest --test-dir build -C Release
 ```
 
 `PRC_GLB_RW_BUILD_TESTS` (default `ON`) builds the tests.
+
+## References
+
+- nanoPRC's public API, [`include/prc_api.h`](https://github.com/CascadiaVoxel/nanoPRC/blob/main/include/prc_api.h),
+  the only part of nanoPRC these tools use. Its demos show the patterns followed here:
+  - `demos/stl_export/src/stl_export.c`: walking the model tree with each node's transform;
+  - `demos/obj_export/src/obj_export.c`: faces, materials and textures;
+  - `demos/stl_import/src/stl_import.c`: writing PRC, embedding it in a PDF, reading it back to
+    check, and the command line;
+  - `demos/teapot_write`: the three levels of the write API, tessellations, representation items
+    and tree nodes;
+  - `tests/functional/test_stl_roundtrip.c`: the round-trip test style, and `tests/prc_test.h`.
+- cgltf: https://github.com/jkuhlmann/cgltf (v1.15). The comments at the top of `cgltf.h` and
+  `cgltf_write.h` describe its use.
+- Draco: https://github.com/google/draco, in particular `src/draco/compression/decode.h`,
+  `encode.h` and `expert_encode.h`.
+- `KHR_draco_mesh_compression`:
+  https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_draco_mesh_compression/README.md
+- glTF 2.0 specification: https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html
+- glTF Validator: https://github.com/KhronosGroup/glTF-Validator
+- glTF sample models: https://github.com/KhronosGroup/glTF-Sample-Assets (licences differ from
+  model to model; check each one's before use).
 
 ## Licence
 

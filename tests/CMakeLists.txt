@@ -2,14 +2,27 @@ cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 
 set(CMAKE_C_STANDARD 99)
 
-# Unit tests of the code the two tools share.
-foreach(name test_info test_cgltf_link)
+# Unit tests of the code the two tools share. They write their files into
+# their own directory under the build tree.
+set(PGR_UNIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/unit_out)
+file(MAKE_DIRECTORY ${PGR_UNIT_DIR})
+
+foreach(name test_info test_cgltf_link test_math test_hash_dedup
+             test_glb_read_basic test_glb_write_valid)
     add_executable(${name} unit/${name}.c)
     target_link_libraries(${name} PRIVATE prc_glb_rw_common)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_test(NAME ${name} COMMAND ${name})
+    add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY ${PGR_UNIT_DIR})
+    # The tests open their files with fopen, which MSVC deprecates.
+    if(MSVC)
+        target_compile_definitions(${name} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
 endforeach()
 target_compile_definitions(test_info PRIVATE PGR_EXPECTED_CGLTF_VERSION="${CGLTF_VERSION}")
+
+# The read test's glTF files are made by fixtures.c, independently of the
+# writer under test.
+target_sources(test_glb_read_basic PRIVATE fixtures.c)
 
 # The tools' command lines: --version, and the exit code for each kind of
 # failure. Placeholder inputs are written here, because the skeleton only

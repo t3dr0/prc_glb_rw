@@ -2,10 +2,16 @@ cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 
 set(CMAKE_C_STANDARD 99)
 
-# Code shared by both tools: version information now, and later the neutral
-# scene model and the glTF reading and writing that both directions use.
+# Code shared by both tools: the neutral scene model, the glTF reading and
+# writing both directions use, and version information.
 add_library(prc_glb_rw_common STATIC
             src/pgr_info.c
+            src/pgr_message.c
+            src/pgr_scene.c
+            src/pgr_math.c
+            src/pgr_hash.c
+            src/pgr_glb_read.c
+            src/pgr_glb_write.c
             src/pgr_cgltf.c)
 
 target_link_libraries(prc_glb_rw_common PUBLIC nano_prc)
@@ -16,11 +22,10 @@ target_compile_definitions(prc_glb_rw_common PRIVATE
                            PGR_VERSION="${PRC_GLB_RW_VERSION}"
                            PGR_CGLTF_VERSION="${CGLTF_VERSION}")
 
-# cgltf uses fopen and strncpy, which MSVC deprecates in favour of its own
-# _s variants; the warnings are about cgltf's unchanged source, not ours.
+# cgltf uses fopen and strncpy, and the writer fopen, which MSVC deprecates
+# in favour of its own _s variants.
 if(MSVC)
-    set_source_files_properties(src/pgr_cgltf.c PROPERTIES
-                                COMPILE_DEFINITIONS _CRT_SECURE_NO_WARNINGS)
+    target_compile_definitions(prc_glb_rw_common PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # Only link the math library if we aren't targeting Windows
