@@ -8,7 +8,7 @@ set(PGR_UNIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/unit_out)
 file(MAKE_DIRECTORY ${PGR_UNIT_DIR})
 
 foreach(name test_info test_cgltf_link test_math test_hash_dedup
-             test_model_path test_glb_read_basic test_glb_write_valid)
+             test_model_path test_glb_read_basic test_glb_write_valid test_prc_write)
     add_executable(${name} unit/${name}.c)
     target_link_libraries(${name} PRIVATE prc_glb_rw_common)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -23,10 +23,11 @@ target_compile_definitions(test_info PRIVATE PGR_EXPECTED_CGLTF_VERSION="${CGLTF
 # The read test's glTF files are made by fixtures.c, independently of the
 # writer under test.
 target_sources(test_glb_read_basic PRIVATE fixtures.c)
+target_sources(test_prc_write PRIVATE fixtures.c)
 
 # The tools' command lines: --version, and the exit code for each kind of
-# failure. Placeholder inputs are written here, because the skeleton only
-# checks that its input opens.
+# failure. The placeholder inputs are empty files: right by name, unreadable
+# as content.
 set(PGR_TEST_DIR ${CMAKE_CURRENT_BINARY_DIR}/cli)
 file(MAKE_DIRECTORY ${PGR_TEST_DIR})
 file(WRITE ${PGR_TEST_DIR}/placeholder.glb "")
@@ -55,7 +56,7 @@ exit_code(import_unknown_option    1 nano_prc_glb_import --no-such-option placeh
 exit_code(import_wrong_input_type  1 nano_prc_glb_import placeholder.prc)
 exit_code(import_wrong_output_type 1 nano_prc_glb_import placeholder.glb out.glb)
 exit_code(import_missing_input     2 nano_prc_glb_import missing.glb out.prc)
-exit_code(import_not_implemented   3 nano_prc_glb_import placeholder.glb out.prc out.pdf)
+exit_code(import_unreadable_input  2 nano_prc_glb_import placeholder.glb out.prc out.pdf)
 
 exit_code(export_no_output         1 nano_prc_glb_export placeholder.prc)
 exit_code(export_wrong_input_type  1 nano_prc_glb_export placeholder.glb out.glb)

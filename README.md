@@ -7,11 +7,10 @@ PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds
 tools built on nanoPRC's public C API, with glTF read and written through
 [cgltf](https://github.com/jkuhlmann/cgltf).
 
-**Status: in development.** Both tools build, report their versions and check their command lines,
-but do not convert yet. The shared code underneath them reads and writes glTF to and from a neutral
-scene (nodes, meshes, materials, vertex colours and texture coordinates; textures and Draco to
-come), with unit tests; the PRC side is next. What follows describes the intended behaviour, and is
-updated as each part lands.
+**Status: in development.** `nano_prc_glb_import` converts geometry and the node hierarchy;
+materials, vertex colours, textures and Draco are to come. `nano_prc_glb_export` checks its command
+line but does not convert yet. What follows describes the intended behaviour where a part has not
+landed.
 
 | Tool | Direction | What it will do |
 |---|---|---|
@@ -22,8 +21,29 @@ updated as each part lands.
 
 ```
 nano_prc_glb_import <input.glb|input.gltf> [output.prc] [output.pdf]
+                    [--triangles] [--no-normals] [--quant-tolerance F]
+                    [--units mm|cm|m|in] [--no-axis-convert]
 nano_prc_glb_import --version
 ```
+
+Output paths default to the input's name with `.prc` and `.pdf`.
+
+| glTF | Becomes |
+|---|---|
+| node, with its matrix or translation, rotation and scale | a PRC node with its placement and name |
+| node's mesh | the node's part; a mesh used by several nodes is written once |
+| triangle primitive (`TRIANGLES`, `TRIANGLE_STRIP`, `TRIANGLE_FAN`) | a compressed tessellation, or with `--triangles` a plain one; strips and fans are triangulated first |
+| line primitive (`LINES`, `LINE_STRIP`, `LINE_LOOP`) | a wire tessellation, connected segments joined into polylines |
+| `POSITION`, `NORMAL` | positions and normals; without normals the reader computes them |
+| scene | under one root node, named after the scene or the file, that converts the axes and units (below) |
+
+- `--quant-tolerance` sets the compressed encoding's tolerance as a fraction of the bounding-box
+  diagonal (default `1e-6`).
+- Not yet written: materials (every part gets nanoPRC's default material), vertex colours,
+  texture coordinates and textures. Points, skins, animations, morph targets, cameras and lights are
+  skipped with one warning each.
+- A file that requires an extension other than `KHR_texture_transform` or `KHR_materials_unlit`
+  is refused (exit code 3), Draco included for now.
 
 ## glb_export
 
@@ -39,15 +59,17 @@ nano_prc_glb_export --version
 | 0 | success |
 | 1 | bad command line |
 | 2 | the input could not be read or parsed |
-| 3 | the input needs something this build does not do (in the skeleton, any conversion) |
+| 3 | the input needs something this build does not do (a required extension it does not handle; for now, any export) |
 | 4 | the output could not be written |
 
 ## Units and axes
 
 glTF is defined in metres with +Y up; PRC from CAD is usually millimetres with +Z up. By default
-the import will place the scene under one root node that scales by 1000 and turns +Y up into +Z
-up, and the export will undo it, so a model stands upright in a PDF viewer and comes back at its
-original size. The coordinates themselves are not changed.
+the import places the scene under one root node that scales by 1000 and turns +Y up into +Z up (a
+quarter-turn about +X), so a model stands upright in a PDF viewer; the export will undo it, so a
+model comes back at its original size. The coordinates themselves are not changed. `--units`
+chooses the PRC's units (`mm`, `cm`, `m` or `in`), and `--no-axis-convert` leaves the axes as they
+are.
 
 ## External files and untrusted input
 
