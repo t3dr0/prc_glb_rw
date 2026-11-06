@@ -14,6 +14,7 @@ add_library(prc_glb_rw_common STATIC
             src/pgr_glb_read.c
             src/pgr_glb_write.c
             src/pgr_prc_write.c
+            src/pgr_prc_read.c
             src/pgr_cgltf.c)
 
 target_link_libraries(prc_glb_rw_common PUBLIC nano_prc)

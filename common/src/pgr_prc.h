@@ -78,4 +78,37 @@ int pgr_prc_write(const pgr_scene *scene, const char *prc_path, const char *pdf_
 void pgr_prc_root_matrix(const pgr_scene *scene, const pgr_prc_write_options *options,
                          double out[16]);
 
+typedef struct pgr_prc_read_options
+{
+    pgr_messages *messages;    /* NULL: messages go to stderr */
+    int no_axis_convert;       /* 1: the PRC's +Z up is kept, not turned to +Y up */
+    double units_per_metre;    /* PRC units per metre; <= 0 selects millimetres */
+} pgr_prc_read_options;
+
+typedef struct pgr_prc_read_stats
+{
+    uint32_t nodes, meshes, primitives;
+    uint32_t triangles, segments;
+    uint32_t skipped;          /* tessellations of kinds not read (markups, exact geometry) */
+    int collapsed_root;        /* 1: a root written by pgr_prc_write was recognised and removed */
+} pgr_prc_read_stats;
+
+/* Read a .prc file, or a PDF with PRC 3D content, into scene, which must be
+   initialised and empty, through nanoPRC's public read API only.
+
+   Each product becomes a node with its placement and name; the parts its
+   products draw become meshes, one primitive per tessellation, shared by
+   every product that draws the same tessellations; triangles, fans and
+   strips become triangles, and lines segments. The scene comes out in
+   glTF's terms, metres and +Y up: each top-level node is placed under the
+   inverse of pgr_prc_root_matrix. A top-level node whose matrix is exactly
+   that root matrix, as pgr_prc_write writes, is taken away instead, its
+   children becoming roots and its name the model's, so that glTF to PRC to
+   glTF gives back the nodes it started with.
+
+   Not read yet: materials, colours, texture coordinates and textures.
+   options and stats may be NULL. Returns PGR_OK or a PGR_ERR_* status. */
+int pgr_prc_read(const char *path, const pgr_prc_read_options *options, pgr_scene *scene,
+                 pgr_prc_read_stats *stats);
+
 #endif

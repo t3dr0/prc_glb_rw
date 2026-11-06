@@ -213,6 +213,11 @@ read_back(const char *path, readback *rb)
         }
     }
     prc_api_release_data(ctx, data, tess, nt, NULL, 0, NULL, 0, tree);
+    /* release_data leaves the face arrays and the array itself, which were
+       allocated here. */
+    for (k = 0; tess != NULL && k < nt; k++)
+        free(tess[k].tess_faces);
+    free(tess);
     return prc_api_release_context(ctx) == 0 ? 0 : -1;
 }
 

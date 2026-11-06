@@ -19,18 +19,28 @@
  * nanoPRC's public read API only (include/prc_api.h), and write it as
  * glTF 2.0, binary (.glb) or JSON with a separate .bin (.gltf).
  *
- * This is the skeleton: it checks its command line and reports versions,
- * and does not convert yet. The plan is for the model tree to become the
- * glTF node hierarchy with each node's transform, each tessellation a
- * mesh shared by every node that uses it, and the scene's millimetres and
- * +Z up turned back into glTF's metres and +Y up.
+ * The PRC is read into the neutral scene (pgr_prc_read) and written from
+ * it (pgr_glb_write):
+ *
+ *   - the model tree becomes the glTF node hierarchy, each node with its
+ *     placement and name;
+ *   - each part becomes a mesh, shared by every node that draws the same
+ *     tessellations; surfaces become triangle primitives, wires line ones;
+ *   - the PRC's millimetres and +Z up become glTF's metres and +Y up
+ *     (--units and --no-axis-convert change that). A file written by
+ *     glb_import comes back with the nodes it started with: the root that
+ *     glb_import added for the conversion is recognised and removed.
+ *
+ * Not yet done: materials, vertex colours, texture coordinates and
+ * textures, and Draco compression.
  *
  * Usage:
- *   nano_prc_glb_export <input.pdf|input.prc> <output.glb|output.gltf>
- *   nano_prc_glb_export --version
+ *   nano_prc_glb_export <input.pdf|input.prc> <output.glb|output.gltf> [options]
  * ==================================================================== */
 
+#include "pgr_glb.h"
 #include "pgr_info.h"
+#include "pgr_prc.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -41,21 +51,31 @@ static void
 usage(FILE *out)
 {
     fprintf(out,
-        "Usage: " TOOL " <input.pdf|input.prc> <output.glb|output.gltf>\n"
+        "Usage: " TOOL " <input.pdf|input.prc> <output.glb|output.gltf> [options]\n"
         "       " TOOL " --version\n"
         "\n"
-        "Converts PRC, or a PDF with PRC 3D content, to glTF 2.0. This build is\n"
-        "a skeleton: it checks its arguments but does not convert yet.\n");
+        "Converts PRC, or a PDF with PRC 3D content, to glTF 2.0: binary for .glb,\n"
+        "JSON with a .bin beside it for .gltf.\n"
+        "\n"
+        "  --units mm|cm|m|in    units of the PRC (default mm)\n"
+        "  --no-axis-convert     keep the PRC's +Z up instead of turning it to +Y up\n"
+        "  --version             print versions and exit\n");
 }
 
 int
 main(int argc, char **argv)
 {
-    const char *input = NULL;
-    const char *output = NULL;
-    FILE *f;
-    int i;
+    const char *input = NULL, *output = NULL;
+    pgr_prc_read_options ropt;
+    pgr_prc_read_stats stats;
+    pgr_glb_write_options wopt;
+    pgr_messages msg;
+    pgr_scene scene;
+    int i, st, rc;
 
+    memset(&ropt, 0, sizeof(ropt));
+    memset(&wopt, 0, sizeof(wopt));
+    memset(&msg, 0, sizeof(msg));
     for (i = 1; i < argc; i++)
     {
         const char *a = argv[i];
@@ -70,13 +90,33 @@ main(int argc, char **argv)
             usage(stdout);
             return PGR_EXIT_OK;
         }
-        if (a[0] == '-' && a[1] != '\0')
+        if (strcmp(a, "--no-axis-convert") == 0)
+            ropt.no_axis_convert = 1;
+        else if (strcmp(a, "--units") == 0 && i + 1 < argc)
+        {
+            const char *u = argv[++i];
+
+            if (strcmp(u, "mm") == 0)
+                ropt.units_per_metre = PGR_UNITS_PER_METRE_MM;
+            else if (strcmp(u, "cm") == 0)
+                ropt.units_per_metre = PGR_UNITS_PER_METRE_CM;
+            else if (strcmp(u, "m") == 0)
+                ropt.units_per_metre = PGR_UNITS_PER_METRE_M;
+            else if (strcmp(u, "in") == 0)
+                ropt.units_per_metre = PGR_UNITS_PER_METRE_IN;
+            else
+            {
+                fprintf(stderr, TOOL ": --units takes mm, cm, m or in\n");
+                return PGR_EXIT_USAGE;
+            }
+        }
+        else if (a[0] == '-' && a[1] != '\0')
         {
             fprintf(stderr, TOOL ": unknown option %s\n", a);
             usage(stderr);
             return PGR_EXIT_USAGE;
         }
-        if (input == NULL)
+        else if (input == NULL)
             input = a;
         else if (output == NULL)
             output = a;
@@ -104,14 +144,17 @@ main(int argc, char **argv)
         return PGR_EXIT_USAGE;
     }
 
-    f = fopen(input, "rb");
-    if (f == NULL)
-    {
-        fprintf(stderr, TOOL ": cannot open %s\n", input);
-        return PGR_EXIT_READ;
-    }
-    fclose(f);
-
-    fprintf(stderr, TOOL ": conversion is not implemented yet in this skeleton\n");
-    return PGR_EXIT_UNSUPPORTED;
+    pgr_scene_init(&scene);
+    ropt.messages = &msg;
+    wopt.messages = &msg;
+    st = pgr_prc_read(input, &ropt, &scene, &stats);
+    if (st == PGR_OK)
+        st = pgr_glb_write(&scene, output, &wopt);
+    if (st == PGR_OK)
+        printf("Wrote %s: %u nodes, %u meshes, %u primitives, %u triangles, %u line segments%s\n",
+               output, stats.nodes, stats.meshes, stats.primitives, stats.triangles,
+               stats.segments, stats.skipped ? " (markups or exact geometry skipped)" : "");
+    rc = pgr_exit_code(st);
+    pgr_scene_free(&scene);
+    return rc;
 }

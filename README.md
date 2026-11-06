@@ -7,12 +7,10 @@ PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds
 tools built on nanoPRC's public C API, with glTF read and written through
 [cgltf](https://github.com/jkuhlmann/cgltf).
 
-**Status: in development.** `nano_prc_glb_import` converts geometry and the node hierarchy;
-materials, vertex colours, textures and Draco are to come. `nano_prc_glb_export` checks its command
-line but does not convert yet. What follows describes the intended behaviour where a part has not
-landed.
+**Status: in development.** Both tools convert geometry and the node hierarchy, in both directions;
+materials, vertex colours, textures and Draco are to come.
 
-| Tool | Direction | What it will do |
+| Tool | Direction | What it does |
 |---|---|---|
 | `nano_prc_glb_import` | glTF → PRC and PDF | Reads a glTF scene with its node hierarchy, transforms, materials, textures and vertex colours, and writes a `.prc` file and a minimal 3D PDF |
 | `nano_prc_glb_export` | PRC or PDF → glTF | Writes the model tree as a glTF scene, binary (`.glb`) or JSON with a separate `.bin` (`.gltf`) |
@@ -49,8 +47,26 @@ Output paths default to the input's name with `.prc` and `.pdf`.
 
 ```
 nano_prc_glb_export <input.pdf|input.prc> <output.glb|output.gltf>
+                    [--units mm|cm|m|in] [--no-axis-convert]
 nano_prc_glb_export --version
 ```
+
+Writes binary glTF for `.glb`, and JSON with a `.bin` of the same name beside it for `.gltf`.
+
+| PRC | Becomes |
+|---|---|
+| product, with its placement and name | a glTF node with its matrix and name |
+| part, and the representation items nested in it | the node's mesh; products drawing the same stored tessellations share one mesh |
+| plain or compressed tessellation | a triangle primitive; fans and strips are triangulated |
+| wire tessellation | a line primitive (`LINES`) |
+| the model | a scene, converted to glTF's metres and +Y up (below) |
+
+- A file written by `nano_prc_glb_import` comes back with the nodes it started with: the root node
+  the import added to convert units and axes is recognised and removed.
+- A product or part with no stored name is read by nanoPRC as "Unnamed Product"; it is written
+  unnamed.
+- Not yet written: materials, vertex colours, texture coordinates and textures. Markups and exact
+  geometry are skipped.
 
 ## Exit codes
 
@@ -59,15 +75,16 @@ nano_prc_glb_export --version
 | 0 | success |
 | 1 | bad command line |
 | 2 | the input could not be read or parsed |
-| 3 | the input needs something this build does not do (a required extension it does not handle; for now, any export) |
+| 3 | the input needs something this build does not do (a required extension it does not handle) |
 | 4 | the output could not be written |
 
 ## Units and axes
 
 glTF is defined in metres with +Y up; PRC from CAD is usually millimetres with +Z up. By default
 the import places the scene under one root node that scales by 1000 and turns +Y up into +Z up (a
-quarter-turn about +X), so a model stands upright in a PDF viewer; the export will undo it, so a
-model comes back at its original size. The coordinates themselves are not changed. `--units`
+quarter-turn about +X), so a model stands upright in a PDF viewer. The export applies the inverse,
+so a model comes back at its original size and the right way up; for a file the import wrote, it
+simply removes that root. The coordinates themselves are not changed. In both tools `--units`
 chooses the PRC's units (`mm`, `cm`, `m` or `in`), and `--no-axis-convert` leaves the axes as they
 are.
 
