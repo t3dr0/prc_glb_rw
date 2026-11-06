@@ -1,0 +1,75 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      nanoprc_ref:
+        description: nanoPRC branch, tag or commit to build against
+        default: main
+
+env:
+  NANOPRC_REPO: CascadiaVoxel/nanoPRC
+  NANOPRC_REF: ${{ github.event.inputs.nanoprc_ref || 'main' }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout prc_glb_rw with its cgltf submodule
+        uses: actions/checkout@v5
+        with:
+          path: prc_glb_rw
+          submodules: true
+
+      # nanoPRC is checked out beside this repository, never inside it. Only
+      # its zlib submodule is needed: SDL, imgui and MatrixUtil serve its demos.
+      - name: Checkout nanoPRC
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.NANOPRC_REPO }}
+          ref: ${{ env.NANOPRC_REF }}
+          path: nanoPRC
+
+      - name: Fetch nanoPRC's zlib submodule
+        run: git -C nanoPRC submodule update --init --depth 1 thirdparty/zlib
+
+      - name: Configure
+        run: cmake -S prc_glb_rw -B build -DNANOPRC_SOURCE_DIR="$GITHUB_WORKSPACE/nanoPRC" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  c99:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout prc_glb_rw with its cgltf submodule
+        uses: actions/checkout@v5
+        with:
+          path: prc_glb_rw
+          submodules: true
+
+      - name: Checkout nanoPRC
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.NANOPRC_REPO }}
+          ref: ${{ env.NANOPRC_REF }}
+          path: nanoPRC
+
+      - name: Strict C99 check
+        run: python3 prc_glb_rw/tests/check_c99.py --nanoprc nanoPRC -v
