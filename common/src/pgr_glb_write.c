@@ -24,7 +24,12 @@
    without reaching 65535, and 32-bit otherwise.
 
    cgltf_write_file is not used: it does not report a failed allocation or
-   write. The JSON is made with cgltf_write and the file written here. */
+   write. The JSON is made with cgltf_write and the file written here.
+
+   cgltf_write puts strings into the JSON as given, and counts as int. So
+   every name is escaped here first (a name from a model file could hold a
+   quote and so end the string early), and a primitive with more than
+   2^31 - 1 vertices or indices is refused. */
 
 #include "pgr_glb.h"
 #include "pgr_info.h"
@@ -146,6 +151,8 @@ typedef struct
     int *mesh_map;           /* scene mesh -> written mesh, or -1 */
     void **scratch;          /* index arrays converted for writing */
     size_t n_scratch;
+    char **names;            /* escaped copies of every string written */
+    size_t n_names;
     bin_buffer bin;
     char generator[128];
     char *bin_uri;
@@ -159,6 +166,9 @@ writer_free(writer *w)
     for (i = 0; i < w->n_scratch; i++)
         free(w->scratch[i]);
     free(w->scratch);
+    for (i = 0; i < w->n_names; i++)
+        free(w->names[i]);
+    free(w->names);
     free(w->views);
     free(w->accessors);
     free(w->attributes);
@@ -171,6 +181,51 @@ writer_free(writer *w)
     free(w->mesh_map);
     free(w->bin.data);
     free(w->bin_uri);
+}
+
+/* s as the inside of a JSON string: '"' and '\' backslashed, control
+   characters as \u00XX; kept in w->names to be freed. NULL for NULL, and
+   *status set when memory runs out. */
+static char *
+escaped(writer *w, const char *s, int *status)
+{
+    static const char hex[] = "0123456789abcdef";
+    size_t n = 0, o = 0;
+    const unsigned char *p;
+    char *e;
+
+    if (s == NULL)
+        return NULL;
+    for (p = (const unsigned char *)s; *p; p++)
+        n += (*p == '"' || *p == '\\') ? 2 : *p < 0x20 ? 6 : 1;
+    e = (char *)malloc(n + 1);
+    if (e == NULL)
+    {
+        *status = PGR_ERR_NOMEM;
+        return NULL;
+    }
+    for (p = (const unsigned char *)s; *p; p++)
+    {
+        if (*p == '"' || *p == '\\')
+        {
+            e[o++] = '\\';
+            e[o++] = (char)*p;
+        }
+        else if (*p < 0x20)
+        {
+            e[o++] = '\\';
+            e[o++] = 'u';
+            e[o++] = '0';
+            e[o++] = '0';
+            e[o++] = hex[*p >> 4];
+            e[o++] = hex[*p & 15];
+        }
+        else
+            e[o++] = (char)*p;
+    }
+    e[o] = '\0';
+    w->names[w->n_names++] = e;
+    return e;
 }
 
 /* Put n bytes into the buffer as a view of the given kind, and describe
@@ -295,7 +350,6 @@ fill_material(const pgr_material *m, cgltf_material *cm)
 {
     int k;
 
-    cm->name = m->name;
     cm->has_pbr_metallic_roughness = 1;
     for (k = 0; k < 4; k++)
         cm->pbr_metallic_roughness.base_color_factor[k] = m->base_color[k];
@@ -356,7 +410,20 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     memset(&copt, 0, sizeof(copt));
 
     for (i = 0; i < s->num_meshes; i++)
+    {
         n_prims += s->meshes[i].num_primitives;
+        for (j = 0; j < s->meshes[i].num_primitives; j++)
+        {
+            const pgr_primitive *p = &s->meshes[i].primitives[j];
+
+            if (p->num_vertices > 0x7fffffffu || p->num_indices > 0x7fffffffu)
+            {
+                pgr_error(msg, "a primitive is too large for glTF as written here "
+                          "(over 2^31 - 1 vertices or indices)");
+                return PGR_ERR_ARG;
+            }
+        }
+    }
     for (i = 0; i < s->num_nodes; i++)
         n_children += s->nodes[i].num_children;
 
@@ -372,9 +439,12 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     w.root_ptrs = (cgltf_node **)calloc(s->num_roots + 1, sizeof(cgltf_node *));
     w.mesh_map = (int *)calloc(s->num_meshes + 1, sizeof(int));
     w.scratch = (void **)calloc(n_prims + 1, sizeof(void *));
+    /* One escaped string per node, mesh and material, the scene's name and
+       the generator. */
+    w.names = (char **)calloc((size_t)s->num_nodes + s->num_meshes + s->num_materials + 2, sizeof(char *));
     if (w.views == NULL || w.accessors == NULL || w.attributes == NULL || w.primitives == NULL
         || w.meshes == NULL || w.materials == NULL || w.nodes == NULL || w.child_ptrs == NULL
-        || w.root_ptrs == NULL || w.mesh_map == NULL || w.scratch == NULL)
+        || w.root_ptrs == NULL || w.mesh_map == NULL || w.scratch == NULL || w.names == NULL)
     {
         writer_free(&w);
         return PGR_ERR_NOMEM;
@@ -385,7 +455,10 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     w.d.materials = w.materials;
     w.d.materials_count = s->num_materials;
     for (i = 0; i < s->num_materials; i++)
+    {
         fill_material(&s->materials[i], &w.materials[i]);
+        w.materials[i].name = escaped(&w, s->materials[i].name, &st);
+    }
 
     /* Meshes; one with no primitive left to draw is not written, since glTF
        requires at least one. */
@@ -418,7 +491,7 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
                 pgr_warn_once(msg, PGR_WARN_EMPTY_MESH, "a mesh with nothing to draw is not written");
                 continue;
             }
-            cm->name = m->name;
+            cm->name = escaped(&w, m->name, &st);
             next += cm->primitives_count;
             w.mesh_map[i] = (int)w.d.meshes_count++;
         }
@@ -435,7 +508,7 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
             cgltf_node *cn = &w.nodes[i];
             int k;
 
-            cn->name = n->name;
+            cn->name = escaped(&w, n->name, &st);
             if (n->mesh >= 0 && w.mesh_map[n->mesh] >= 0)
                 cn->mesh = &w.meshes[w.mesh_map[n->mesh]];
             if (n->has_matrix && !pgr_mat4_is_identity(n->matrix, 0.0))
@@ -458,7 +531,7 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     }
     w.d.nodes = w.nodes;
     w.d.nodes_count = s->num_nodes;
-    w.scene.name = s->model_name;
+    w.scene.name = escaped(&w, s->model_name, &st);
     w.scene.nodes = w.root_ptrs;
     w.scene.nodes_count = s->num_roots;
     w.d.scenes = &w.scene;
@@ -470,7 +543,7 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     else
         snprintf(w.generator, sizeof(w.generator), "prc_glb_rw %s", pgr_version());
     w.d.asset.version = (char *)"2.0";
-    w.d.asset.generator = w.generator;
+    w.d.asset.generator = escaped(&w, w.generator, &st);
 
     if (st == PGR_OK && w.bin.size > 0)
     {

@@ -32,6 +32,13 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 The text above is cgltf's `LICENSE` file, rewrapped; the file in the submodule is the original.
 
+Known, and unfixed upstream as of 6 November 2026: CVE-2026-32845. `cgltf_validate` sums accessor,
+sparse-accessor and buffer-view sizes without checking for overflow, and a crafted file can then make
+it read far outside a buffer. `cgltf_load_buffer_base64` also allocates a buffer's declared length
+before decoding it, and `cgltf_write` writes strings unescaped. `pgr_glb_read` checks every size with
+sums that cannot wrap before cgltf loads or validates anything, and `pgr_glb_write` escapes every
+string it hands to cgltf; cgltf itself is left unchanged.
+
 ## nanoPRC
 
 - Purpose: PRC reading and writing; both tools link it.

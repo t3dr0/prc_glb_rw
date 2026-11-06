@@ -49,6 +49,18 @@ the import will place the scene under one root node that scales by 1000 and turn
 up, and the export will undo it, so a model stands upright in a PDF viewer and comes back at its
 original size. The coordinates themselves are not changed.
 
+## External files and untrusted input
+
+- A `.gltf` file's buffers (and, once textures are read, its images) are only ever read from the
+  glTF's folder and its subfolders. A plain relative path down from the glTF is used as written;
+  any other, such as `C:\Users\me\scene.bin` or `../scene.bin`, is reduced to its file name and
+  looked for in the glTF's folder and then its subfolders, nearest first (four levels down at most,
+  alphabetically within a folder, an exact name before one that differs only in letter case). Each
+  substitution is reported. Links are not followed. The same rule, from the same file
+  (`common/src/model_path.c`), is used by prc_obj_rw and prc_ply_rw for their texture images.
+- Every size a glTF file gives is checked before cgltf uses it, because cgltf v1.15's own checks
+  can overflow (CVE-2026-32845); see THIRD_PARTY_NOTICES.md.
+
 ## Building
 
 nanoPRC is required. cgltf is a git submodule of this repository, so clone it with its submodule:

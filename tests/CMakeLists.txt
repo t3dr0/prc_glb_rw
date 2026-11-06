@@ -8,7 +8,7 @@ set(PGR_UNIT_DIR ${CMAKE_CURRENT_BINARY_DIR}/unit_out)
 file(MAKE_DIRECTORY ${PGR_UNIT_DIR})
 
 foreach(name test_info test_cgltf_link test_math test_hash_dedup
-             test_glb_read_basic test_glb_write_valid)
+             test_model_path test_glb_read_basic test_glb_write_valid)
     add_executable(${name} unit/${name}.c)
     target_link_libraries(${name} PRIVATE prc_glb_rw_common)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

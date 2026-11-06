@@ -32,14 +32,24 @@
 
    Points, skins, animations, morph targets, cameras and lights are skipped
    with one warning per kind. A file that requires an extension this code
-   does not handle is refused with PGR_ERR_UNSUPPORTED. */
+   does not handle is refused with PGR_ERR_UNSUPPORTED.
+
+   Before cgltf loads or validates anything, every size the JSON gives is
+   checked here with sums that cannot wrap (check_layout): cgltf_validate
+   does the same sums unchecked (CVE-2026-32845, and the same pattern for
+   accessors and buffer views), so a crafted file could otherwise make it
+   read far outside a buffer. External buffers are found with
+   model_path_resolve, which never leaves the glTF's folder, and loaded
+   here rather than by cgltf. */
 
 #include "pgr_glb.h"
 #include "pgr_math.h"
+#include "model_path.h"
 
 #include "cgltf.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -125,6 +135,192 @@ check_required_extensions(const cgltf_data *data, pgr_messages *msg)
         }
     }
     return PGR_OK;
+}
+
+/* The largest accessor with no buffer view (all zeros, perhaps with sparse
+   values) the reader accepts: such an accessor costs memory without the
+   file having to be large. */
+#define PGR_MAX_VIEWLESS_ELEMENTS (1u << 24)
+
+static int
+fits(cgltf_size offset, cgltf_size size, cgltf_size limit)
+{
+    return offset <= limit && size <= limit - offset;
+}
+
+/* offset + stride * (count - 1) + element <= limit, without wrapping. */
+static int
+strided_fits(cgltf_size offset, cgltf_size stride, cgltf_size count, cgltf_size element,
+             cgltf_size limit)
+{
+    if (count == 0)
+        return offset <= limit;
+    if (!fits(offset, element, limit))
+        return 0;
+    if (count == 1)
+        return 1;
+    if (stride == 0)
+        return 0;
+    return (limit - offset - element) / stride >= count - 1;
+}
+
+/* The most bytes a base64 data URI's payload can decode to, or 0 when uri
+   is not a data URI. */
+static cgltf_size
+data_uri_capacity(const char *uri)
+{
+    const char *comma;
+
+    if (strncmp(uri, "data:", 5) != 0)
+        return 0;
+    comma = strchr(uri, ',');
+    if (comma == NULL)
+        return 0;
+    return (strlen(comma + 1) / 4) * 3 + 3;
+}
+
+/* Every size in the JSON against what it refers to, and glTF's limits on
+   strides and alignment, before cgltf's own unchecked sums see them. */
+static int
+check_layout(const cgltf_data *data, pgr_messages *msg)
+{
+    cgltf_size i;
+
+    for (i = 0; i < data->buffers_count; i++)
+    {
+        const cgltf_buffer *b = &data->buffers[i];
+
+        if (b->uri != NULL && strncmp(b->uri, "data:", 5) == 0 && b->size > data_uri_capacity(b->uri))
+        {
+            pgr_error(msg, "buffer %u claims more bytes than its data URI holds", (unsigned)i);
+            return PGR_ERR_PARSE;
+        }
+    }
+
+    for (i = 0; i < data->buffer_views_count; i++)
+    {
+        const cgltf_buffer_view *v = &data->buffer_views[i];
+
+        if (v->buffer == NULL || !fits(v->offset, v->size, v->buffer->size)
+            || (v->stride != 0 && (v->stride < 4 || v->stride > 252 || v->stride % 4 != 0)))
+        {
+            pgr_error(msg, "buffer view %u does not fit its buffer or has an invalid stride", (unsigned)i);
+            return PGR_ERR_PARSE;
+        }
+    }
+
+    for (i = 0; i < data->accessors_count; i++)
+    {
+        const cgltf_accessor *a = &data->accessors[i];
+        cgltf_size comp = cgltf_component_size(a->component_type);
+        cgltf_size elem = cgltf_calc_size(a->type, a->component_type);
+        int ok = comp != 0 && elem != 0 && a->count <= 0xffffffffu;
+
+        if (ok && a->buffer_view != NULL)
+            ok = a->offset % comp == 0 && (a->buffer_view->offset + a->offset) % comp == 0
+                 && a->stride % comp == 0 && a->stride >= elem
+                 && strided_fits(a->offset, a->stride, a->count, elem, a->buffer_view->size);
+        else if (ok)
+            ok = a->count <= PGR_MAX_VIEWLESS_ELEMENTS;
+        if (ok && a->is_sparse)
+        {
+            const cgltf_accessor_sparse *s = &a->sparse;
+            cgltf_size icomp = cgltf_component_size(s->indices_component_type);
+
+            ok = s->count <= a->count && s->indices_buffer_view != NULL && s->values_buffer_view != NULL
+                 && (s->indices_component_type == cgltf_component_type_r_8u
+                     || s->indices_component_type == cgltf_component_type_r_16u
+                     || s->indices_component_type == cgltf_component_type_r_32u)
+                 && strided_fits(s->indices_byte_offset, icomp, s->count, icomp, s->indices_buffer_view->size)
+                 && strided_fits(s->values_byte_offset, elem, s->count, elem, s->values_buffer_view->size);
+        }
+        if (!ok)
+        {
+            pgr_error(msg, "accessor %u does not fit its buffer view", (unsigned)i);
+            return PGR_ERR_PARSE;
+        }
+    }
+    return PGR_OK;
+}
+
+/* Load each buffer kept in a file beside the .gltf, found by
+   model_path_resolve so that its name cannot lead outside the glTF's
+   folder. cgltf then sees the buffers as loaded and leaves them alone. */
+static int
+load_external_buffers(cgltf_data *data, const char *gltf_path, pgr_messages *msg)
+{
+    cgltf_size i;
+
+    for (i = 0; i < data->buffers_count; i++)
+    {
+        cgltf_buffer *b = &data->buffers[i];
+        char note[1024];
+        char *uri, *file = NULL;
+        FILE *f;
+        void *bytes;
+        int r;
+
+        if (b->data != NULL || b->uri == NULL || strncmp(b->uri, "data:", 5) == 0)
+            continue;
+        uri = pgr_strdup(b->uri);
+        if (uri == NULL)
+            return PGR_ERR_NOMEM;
+        /* cgltf keeps strings as the JSON wrote them: undo the JSON
+           escapes, then the URI's percent-encoding. */
+        cgltf_decode_string(uri);
+        cgltf_decode_uri(uri);
+        r = model_path_resolve(gltf_path, uri, &file, note, sizeof(note));
+        free(uri);
+        if (r == MODEL_PATH_NO_MEMORY)
+            return PGR_ERR_NOMEM;
+        if (r == MODEL_PATH_NOT_FOUND)
+        {
+            pgr_error(msg, "buffer %u: %s", (unsigned)i, note);
+            return PGR_ERR_PARSE;
+        }
+        if (r == MODEL_PATH_SUBSTITUTED)
+            pgr_warn(msg, "buffer %u: %s", (unsigned)i, note);
+
+        /* Only the bytes the buffer declares are read; a shorter file is
+           refused, so the allocation never exceeds the file. */
+        f = fopen(file, "rb");
+        bytes = malloc(b->size ? b->size : 1);
+        if (f == NULL || bytes == NULL || (b->size > 0 && fread(bytes, 1, b->size, f) != b->size))
+        {
+            if (f != NULL)
+                fclose(f);
+            free(bytes);
+            pgr_error(msg, "buffer %u: cannot read %u bytes from %s", (unsigned)i, (unsigned)b->size, file);
+            free(file);
+            return bytes == NULL ? PGR_ERR_NOMEM : PGR_ERR_PARSE;
+        }
+        fclose(f);
+        free(file);
+        b->data = bytes;
+        b->data_free_method = cgltf_data_free_method_memory_free;
+    }
+    return PGR_OK;
+}
+
+/* cgltf keeps names as the JSON wrote them, escapes and all; decode them in
+   place before they are copied into the scene. */
+static void
+decode_names(cgltf_data *data)
+{
+    cgltf_size i;
+
+    for (i = 0; i < data->nodes_count; i++)
+        if (data->nodes[i].name != NULL)
+            cgltf_decode_string(data->nodes[i].name);
+    for (i = 0; i < data->meshes_count; i++)
+        if (data->meshes[i].name != NULL)
+            cgltf_decode_string(data->meshes[i].name);
+    for (i = 0; i < data->materials_count; i++)
+        if (data->materials[i].name != NULL)
+            cgltf_decode_string(data->materials[i].name);
+    for (i = 0; i < data->scenes_count; i++)
+        if (data->scenes[i].name != NULL)
+            cgltf_decode_string(data->scenes[i].name);
 }
 
 static int
@@ -237,15 +433,21 @@ typedef struct
     uint32_t n, cap;
 } index_list;
 
+/* Append one index. A list cannot pass 2^32 - 1 entries: a strip or fan of
+   n indices makes 3 (n - 2), which for a long one would not fit. */
 static int
 push(index_list *l, uint32_t a)
 {
     if (l->n == l->cap)
     {
-        uint32_t cap = l->cap ? l->cap * 2 : 64;
-        uint32_t *v = (uint32_t *)realloc(l->v, cap * sizeof(uint32_t));
+        uint32_t cap;
+        uint32_t *v;
 
-        if (v == NULL || cap < l->cap)
+        if (l->cap == 0xffffffffu)
+            return PGR_ERR_NOMEM;
+        cap = l->cap == 0 ? 64 : l->cap > 0x7fffffffu ? 0xffffffffu : l->cap * 2;
+        v = (uint32_t *)realloc(l->v, (size_t)cap * sizeof(uint32_t));
+        if (v == NULL)
             return PGR_ERR_NOMEM;
         l->v = v;
         l->cap = cap;
@@ -620,6 +822,10 @@ pgr_glb_read(const char *path, const pgr_glb_read_options *options, pgr_scene *s
     }
     st = check_required_extensions(data, msg);
     if (st == PGR_OK)
+        st = check_layout(data, msg);
+    if (st == PGR_OK)
+        st = load_external_buffers(data, path, msg);
+    if (st == PGR_OK)
     {
         r = cgltf_load_buffers(&copt, data, path);
         if (r == cgltf_result_success)
@@ -630,6 +836,8 @@ pgr_glb_read(const char *path, const pgr_glb_read_options *options, pgr_scene *s
             st = r == cgltf_result_out_of_memory ? PGR_ERR_NOMEM : PGR_ERR_PARSE;
         }
     }
+    if (st == PGR_OK)
+        decode_names(data);
     if (st == PGR_OK && data->animations_count > 0)
         pgr_warn_once(msg, PGR_WARN_ANIMATIONS, "animations are not supported; they are skipped");
 

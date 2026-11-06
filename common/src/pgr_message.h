@@ -64,6 +64,10 @@ typedef struct pgr_messages
 /* Report a warning of the given kind unless that kind was already reported. */
 void pgr_warn_once(pgr_messages *m, unsigned kind, const char *fmt, ...);
 
+/* Report a warning every time, for things the user needs to see each of,
+   such as a file found somewhere other than where the model said. */
+void pgr_warn(pgr_messages *m, const char *fmt, ...);
+
 /* Report an error. */
 void pgr_error(pgr_messages *m, const char *fmt, ...);
 

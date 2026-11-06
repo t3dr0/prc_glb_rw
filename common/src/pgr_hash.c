@@ -171,8 +171,11 @@ pgr_vertex_map_insert(pgr_vertex_map *map, const float *v, uint32_t *index)
     }
     if (result == 1 && map->count >= map->capacity)
     {
-        uint32_t cap = map->capacity * 2;
-        float *bigger = (float *)realloc(map->data, (size_t)cap * map->stride * sizeof(float));
+        /* The table's limit keeps capacity far below 2^31, but the doubling
+           is guarded anyway, so it can never wrap to 0. */
+        uint32_t cap = map->capacity >= 0x80000000u ? 0 : map->capacity * 2;
+        float *bigger = cap == 0 || map->stride == 0 ? NULL
+            : (float *)realloc(map->data, (size_t)cap * map->stride * sizeof(float));
 
         if (bigger == NULL)
             result = PGR_ERR_NOMEM;

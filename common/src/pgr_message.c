@@ -56,6 +56,16 @@ pgr_warn_once(pgr_messages *m, unsigned kind, const char *fmt, ...)
 }
 
 void
+pgr_warn(pgr_messages *m, const char *fmt, ...)
+{
+    va_list ap;
+
+    va_start(ap, fmt);
+    deliver(m, 0, fmt, ap);
+    va_end(ap);
+}
+
+void
 pgr_error(pgr_messages *m, const char *fmt, ...)
 {
     va_list ap;

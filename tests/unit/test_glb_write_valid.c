@@ -119,7 +119,9 @@ build_scene(pgr_scene *s)
     p->indices[2] = 1;
     p->indices[3] = 2;
 
-    pgr_scene_add_node(s, "root", &n);
+    /* A name a model file could carry: quotes, a backslash and a control
+       character must come back as they went in, not break the JSON. */
+    pgr_scene_add_node(s, "root \"quoted\" C:\\path\tand\nlines", &n);
     pgr_mat4_from_trs(t, q, sc, n->matrix);
     n->has_matrix = 1;
     pgr_scene_add_node(s, "first cube", &n);

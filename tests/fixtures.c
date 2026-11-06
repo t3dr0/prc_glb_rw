@@ -602,6 +602,87 @@ fx_bad_index(const char *path)
 }
 
 int
+fx_edited(const char *path, int (*make)(const char *), const char *old, const char *replacement)
+{
+    FILE *f;
+    char *text, *at;
+    long n;
+    int st = 1;
+
+    if (make(path) != 0 || (f = fopen(path, "rb")) == NULL)
+        return 1;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (n < 0)
+    {
+        fclose(f);
+        return 1;
+    }
+    text = (char *)malloc((size_t)n + 1);
+    if (text == NULL)
+        die();
+    if (fread(text, 1, (size_t)n, f) != (size_t)n)
+        n = -1;
+    fclose(f);
+    if (n >= 0)
+    {
+        text[n] = '\0';
+        at = strstr(text, old);
+        if (at != NULL && (f = fopen(path, "wb")) != NULL)
+        {
+            fwrite(text, 1, (size_t)(at - text), f);
+            fputs(replacement, f);
+            fputs(at + strlen(old), f);
+            st = fclose(f) != 0;
+        }
+    }
+    free(text);
+    return st;
+}
+
+int
+fx_external_buffer(const char *gltf_path, const char *uri, const char *bin_path)
+{
+    char body[1024];
+    FILE *f;
+    text j = { NULL, 0, 0 };
+    int st = 0;
+    uint16_t idx[4] = { 0, 1, 2, 0 };    /* padded to 4 bytes */
+
+    f = fopen(bin_path, "wb");
+    if (f == NULL)
+        return 1;
+    if (fwrite(tri_pos, 1, sizeof(tri_pos), f) != sizeof(tri_pos) || fwrite(idx, 1, 8, f) != 8)
+        st = 1;
+    if (fclose(f) != 0)
+        st = 1;
+    snprintf(body, sizeof(body),
+             "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+             "\"buffers\":[{\"byteLength\":44,\"uri\":\"");
+    text_printf(&j, "%s", body);
+    /* The URI as a JSON string: backslashes doubled. */
+    for (; *uri; uri++)
+    {
+        if (*uri == '\\')
+            text_printf(&j, "\\\\");
+        else
+            text_printf(&j, "%c", *uri);
+    }
+    text_printf(&j, "\"}],\"bufferViews\":[{\"buffer\":0,\"byteLength\":36},{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+                "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
+                "\"min\":[0,0,0],\"max\":[1,1,0]},{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}]}");
+    f = fopen(gltf_path, "wb");
+    if (f == NULL || fwrite(j.s, 1, j.n, f) != j.n)
+        st = 1;
+    if (f != NULL && fclose(f) != 0)
+        st = 1;
+    free(j.s);
+    return st;
+}
+
+int
 fx_no_scene(const char *path)
 {
     fx f;

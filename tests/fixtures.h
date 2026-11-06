@@ -82,4 +82,11 @@ int fx_bad_index(const char *path);
 /* Two nodes with no scene: the first the parent of the second. */
 int fx_no_scene(const char *path);
 
+/* make's .gltf with the first occurrence of `old` in its JSON replaced by
+   `replacement`: sizes no reader should believe. path must end in .gltf. */
+int fx_edited(const char *path, int (*make)(const char *), const char *old, const char *replacement);
+
+/* A triangle whose buffer is the file bin_path, named in the JSON as uri. */
+int fx_external_buffer(const char *gltf_path, const char *uri, const char *bin_path);
+
 #endif

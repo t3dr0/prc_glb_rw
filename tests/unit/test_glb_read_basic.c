@@ -26,6 +26,14 @@
 #include <math.h>
 #include <stdio.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#define make_dir(p) _mkdir(p)
+#else
+#include <sys/stat.h>
+#define make_dir(p) mkdir((p), 0755)
+#endif
+
 static const char *ext;      /* ".glb" or ".gltf" for this pass */
 
 /* Messages are counted, not printed; the last one is kept. */
@@ -352,6 +360,89 @@ test_refused_and_rejected(void)
     pgr_scene_free(&r.scene);
 }
 
+/* Read path, made beforehand, with messages collected. */
+static int
+read_file_status(const char *path, result *r)
+{
+    pgr_glb_read_options opt;
+
+    memset(r, 0, sizeof(*r));
+    pgr_scene_init(&r->scene);
+    r->msg.fn = collect;
+    r->msg.user = r->last;
+    opt.messages = &r->msg;
+    r->status = pgr_glb_read(path, &opt, &r->scene);
+    pgr_scene_free(&r->scene);
+    return r->status;
+}
+
+/* Sizes that wrap cgltf's own checks (CVE-2026-32845 and its kind): each
+   must be refused before cgltf reads anything with them. */
+static void
+test_hostile_sizes(void)
+{
+    result r;
+
+    PGR_CHECK(fx_edited("hostile_stride.gltf", fx_u8_colors,
+                        "\"byteStride\":4", "\"byteStride\":9223372036854775808") == 0);
+    PGR_CHECK(read_file_status("hostile_stride.gltf", &r) == PGR_ERR_PARSE);
+
+    /* A stride glTF does not allow (not a multiple of 4), though the data
+       would fit. */
+    PGR_CHECK(fx_edited("odd_stride.gltf", fx_u8_colors,
+                        "\"byteLength\":12,\"byteStride\":4", "\"byteLength\":16,\"byteStride\":6") == 0);
+    PGR_CHECK(read_file_status("odd_stride.gltf", &r) == PGR_ERR_PARSE);
+
+    PGR_CHECK(fx_edited("hostile_sparse.gltf", fx_sparse_positions,
+                        "\"sparse\":{\"count\":1", "\"sparse\":{\"count\":4611686018427387904") == 0);
+    PGR_CHECK(read_file_status("hostile_sparse.gltf", &r) == PGR_ERR_PARSE);
+
+    /* A data URI that claims 2^62 bytes: refused before cgltf allocates. */
+    PGR_CHECK(fx_edited("hostile_length.gltf", fx_cube_flat,
+                        "\"buffers\":[{\"byteLength\":",
+                        "\"buffers\":[{\"byteLength\":4611686018427387904,\"extras\":") == 0);
+    PGR_CHECK(read_file_status("hostile_length.gltf", &r) == PGR_ERR_PARSE);
+
+    PGR_CHECK(fx_edited("hostile_offset.gltf", fx_cube_flat,
+                        "{\"buffer\":0,\"byteOffset\":0,", "{\"buffer\":0,\"byteOffset\":18446744073709551612,") == 0);
+    PGR_CHECK(read_file_status("hostile_offset.gltf", &r) == PGR_ERR_PARSE);
+
+    PGR_CHECK(fx_edited("hostile_count.gltf", fx_cube_flat,
+                        "\"count\":24,", "\"count\":4611686018427387904,") == 0);
+    PGR_CHECK(read_file_status("hostile_count.gltf", &r) == PGR_ERR_PARSE);
+}
+
+/* A .gltf's buffer file is found inside its folder only. */
+static void
+test_external_buffers(void)
+{
+    result r;
+
+    make_dir("ext");
+    make_dir("ext/data");
+    make_dir("ext2");
+
+    /* As written. */
+    PGR_CHECK(fx_external_buffer("ext/model.gltf", "data/tri.bin", "ext/data/tri.bin") == 0);
+    PGR_CHECK(read_file_status("ext/model.gltf", &r) == PGR_OK);
+    PGR_CHECK(r.msg.warnings == 0);
+
+    /* Percent-encoded, as glTF URIs may be. */
+    PGR_CHECK(fx_external_buffer("ext/model_space.gltf", "data/tri%20file.bin", "ext/data/tri file.bin") == 0);
+    PGR_CHECK(read_file_status("ext/model_space.gltf", &r) == PGR_OK);
+    PGR_CHECK(r.msg.warnings == 0);
+
+    /* Another machine's absolute path: found by name, with a warning. */
+    PGR_CHECK(fx_external_buffer("ext/model_abs.gltf", "C:\\elsewhere\\tri.bin", "ext/data/tri.bin") == 0);
+    PGR_CHECK(read_file_status("ext/model_abs.gltf", &r) == PGR_OK);
+    PGR_CHECK(r.msg.warnings == 1 && strstr(r.last, "data/tri.bin") != NULL);
+
+    /* A file outside the folder is not read, even though it exists. */
+    PGR_CHECK(fx_external_buffer("ext2/model.gltf", "../outside.bin", "outside.bin") == 0);
+    PGR_CHECK(read_file_status("ext2/model.gltf", &r) == PGR_ERR_PARSE);
+    PGR_CHECK(strstr(r.last, "not found") != NULL);
+}
+
 int
 main(void)
 {
@@ -373,5 +464,7 @@ main(void)
         if (pgr_test_failures != before)
             fprintf(stderr, "(failures above are in the %s pass)\n", ext);
     }
+    test_hostile_sizes();
+    test_external_buffers();
     return PGR_TEST_RESULT;
 }
