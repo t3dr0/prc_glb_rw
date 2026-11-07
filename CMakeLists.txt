@@ -37,6 +37,14 @@ endif()
 
 set(PRC_GLB_RW_VERSION "0.1.0")
 
+# A function called before it is declared is an implicit declaration, which
+# C99 removed: GCC and Clang refuse it, but MSVC only warns (C4013) and the
+# build goes on. Make that warning an error here too, for this repository's
+# own targets; nanoPRC's, added above, are not affected.
+if(MSVC)
+    add_compile_options(/we4013)
+endif()
+
 # cgltf is a git submodule, pinned at its v1.15 tag. See THIRD_PARTY_NOTICES.md.
 set(CGLTF_DIR "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/cgltf" CACHE PATH
     "Path to the cgltf sources (git submodule thirdparty/cgltf)")
