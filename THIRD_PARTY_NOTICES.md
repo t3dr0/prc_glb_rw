@@ -39,6 +39,18 @@ before decoding it, and `cgltf_write` writes strings unescaped. `pgr_glb_read` c
 sums that cannot wrap before cgltf loads or validates anything, and `pgr_glb_write` escapes every
 string it hands to cgltf; cgltf itself is left unchanged.
 
+## stb_image_write
+
+- Purpose: PNG encoding of the textures `nano_prc_glb_export` reads from PRC.
+- Location: `common/src/stb_image_write.h` (v1.16, vendored), compiled in `common/src/pgr_png.c`.
+- Author: Sean Barrett.
+- Source: https://github.com/nothings/stb
+- Licence: public domain (Unlicense) or MIT, at the user's choice. The full text is at the end of the
+  header file.
+- Known, and unfixed upstream: CVE-2026-102805, unchecked size arithmetic in `stbi_write_png_to_mem`
+  and the JPEG and TGA writers. `pgr_image_encode_png` encodes an image only when its width, height
+  and channels are sensible and its pixels take at most 2^28 bytes.
+
 ## nanoPRC
 
 - Purpose: PRC reading and writing; both tools link it.

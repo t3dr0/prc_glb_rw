@@ -104,6 +104,11 @@ typedef struct pgr_prc_read_stats
     uint32_t nodes, meshes, primitives;
     uint32_t triangles, segments;
     uint32_t skipped;          /* tessellations of kinds not read (markups, exact geometry) */
+    uint32_t unread;           /* tessellations left out because nanoPRC could not read them */
+    uint32_t materials;        /* scene materials made */
+    uint32_t textures;         /* scene textures made, one per distinct image */
+    uint32_t coloured;         /* primitives with vertex colours */
+    uint32_t textured;         /* primitives with texture coordinates */
     int collapsed_root;        /* 1: a root written by pgr_prc_write was recognised and removed */
 } pgr_prc_read_stats;
 
@@ -111,8 +116,8 @@ typedef struct pgr_prc_read_stats
    initialised and empty, through nanoPRC's public read API only.
 
    Each product becomes a node with its placement and name; the parts its
-   products draw become meshes, one primitive per tessellation, shared by
-   every product that draws the same tessellations; triangles, fans and
+   products draw become meshes, shared by every product that draws the
+   same tessellations; triangles, fans and
    strips become triangles, and lines segments. The scene comes out in
    glTF's terms, metres and +Y up: each top-level node is placed under the
    inverse of pgr_prc_root_matrix. A top-level node whose matrix is exactly
@@ -120,8 +125,16 @@ typedef struct pgr_prc_read_stats
    children becoming roots and its name the model's, so that glTF to PRC to
    glTF gives back the nodes it started with.
 
-   Not read yet: materials, colours, texture coordinates and textures
-   (pgr_prc_write writes them; reading them back comes next).
+   A tessellation gives one primitive for each appearance in it: material,
+   texture, and whether its vertices carry colours. Material colours are
+   converted from the sRGB values PRC stores to glTF's linear values, the
+   alpha blends when below 1, the roughness is 1 - shininess, and a
+   material black but for its emissive colour reads as unlit. Vertex
+   colours are converted the same way and given a white base colour, as
+   PRC viewers draw them in place of the material colour. A texture that
+   colours the surface is encoded as PNG, once per distinct image, with the
+   texture coordinates as nanoPRC gives them, already in glTF's convention.
+   A tessellation nanoPRC cannot read is left out with a warning.
    options and stats may be NULL. Returns PGR_OK or a PGR_ERR_* status. */
 int pgr_prc_read(const char *path, const pgr_prc_read_options *options, pgr_scene *scene,
                  pgr_prc_read_stats *stats);

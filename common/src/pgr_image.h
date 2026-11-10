@@ -41,4 +41,13 @@
 int pgr_image_info(const uint8_t *bytes, size_t size, int *mime, uint32_t *width,
                    uint32_t *height);
 
+/* Raw pixels, as nanoPRC's reader gives a texture, encoded as a PNG: width x
+   height pixels of channels bytes each (1 grey, 2 grey and alpha, 3 RGB,
+   4 RGBA), row by row from the top, tightly packed. The PNG is allocated
+   with malloc into *png, its size in *size. Returns PGR_OK; PGR_ERR_ARG
+   when a size is zero, channels is not 1 to 4, or the image exceeds the
+   bounds above; PGR_ERR_NOMEM when memory runs out. */
+int pgr_image_encode_png(const uint8_t *pixels, uint32_t width, uint32_t height, uint32_t channels,
+                         uint8_t **png, size_t *size);
+
 #endif

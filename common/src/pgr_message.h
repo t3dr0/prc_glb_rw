@@ -53,6 +53,9 @@
 #define PGR_WARN_NO_UVS          (1u << 17)
 #define PGR_WARN_UNLIT           (1u << 18)
 #define PGR_WARN_MASKED_OUT      (1u << 19)
+#define PGR_WARN_TEXTURE_KIND    (1u << 20)
+#define PGR_WARN_TEXTURE_LAYERS  (1u << 21)
+#define PGR_WARN_TEXTURE_IMAGE   (1u << 22)
 
 typedef void (*pgr_message_fn)(void *user, int is_error, const char *text);
 

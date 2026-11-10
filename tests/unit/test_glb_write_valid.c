@@ -413,6 +413,37 @@ test_edge_cases(void)
     pgr_scene_free(&s);
 }
 
+/* glTF's JSON must be UTF-8. A name already in UTF-8 is written as it is;
+   one in Latin-1, as PRC files hold them, is converted; so is each byte of
+   a sequence that is not well formed (here an encoded surrogate, and a
+   sequence cut short by the end of the name). cgltf would accept the bytes
+   either way, so the JSON is checked byte by byte through the names read
+   back. */
+static void
+test_names_utf8(void)
+{
+    static const char *in[4] = { "St\xc3\xa4" "be", "St\xe4" "be", "\xed\xa0\x80", "end\xc3" };
+    static const char *out[4] = { "St\xc3\xa4" "be", "St\xc3\xa4" "be", "\xc3\xad\xc2\xa0\xc2\x80", "end\xc3\x83" };
+    pgr_scene s, back;
+    pgr_node *n;
+    uint32_t i;
+
+    pgr_scene_init(&s);
+    for (i = 0; i < 4; i++)
+    {
+        pgr_scene_add_node(&s, in[i], &n);
+        pgr_scene_add_root(&s, i);
+    }
+    PGR_CHECK(pgr_glb_write(&s, "names.glb", NULL) == PGR_OK);
+    pgr_scene_init(&back);
+    PGR_CHECK(pgr_glb_read("names.glb", NULL, &back) == PGR_OK);
+    PGR_CHECK(back.num_nodes == 4);
+    for (i = 0; i < back.num_nodes && i < 4; i++)
+        PGR_CHECK_STR(back.nodes[i].name, out[i]);
+    pgr_scene_free(&back);
+    pgr_scene_free(&s);
+}
+
 int
 main(void)
 {
@@ -421,5 +452,6 @@ main(void)
     test_index_width(65535, cgltf_component_type_r_16u);
     test_index_width(65536, cgltf_component_type_r_32u);
     test_edge_cases();
+    test_names_utf8();
     return PGR_TEST_RESULT;
 }

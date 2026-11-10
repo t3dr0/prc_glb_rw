@@ -7,14 +7,13 @@ PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds
 tools built on nanoPRC's public C API, with glTF read and written through
 [cgltf](https://github.com/jkuhlmann/cgltf).
 
-**Status: in development.** Both tools convert geometry and the node hierarchy, in both directions.
-The import also writes materials, vertex colours and base colour textures; the export does not read
-them back yet, and Draco is to come.
+**Status: in development.** Both tools convert geometry, the node hierarchy, materials, vertex
+colours and base colour textures, in both directions. Draco is to come.
 
 | Tool | Direction | What it does |
 |---|---|---|
 | `nano_prc_glb_import` | glTF → PRC and PDF | Reads a glTF scene with its node hierarchy, transforms, materials, textures and vertex colours, and writes a `.prc` file and a minimal 3D PDF |
-| `nano_prc_glb_export` | PRC or PDF → glTF | Writes the model tree as a glTF scene, binary (`.glb`) or JSON with a separate `.bin` (`.gltf`) |
+| `nano_prc_glb_export` | PRC or PDF → glTF | Writes the model tree as a glTF scene with its materials, textures and vertex colours, binary (`.glb`) or JSON with a separate `.bin` (`.gltf`) |
 
 ## glb_import
 
@@ -102,16 +101,46 @@ Writes binary glTF for `.glb`, and JSON with a `.bin` of the same name beside it
 |---|---|
 | product, with its placement and name | a glTF node with its matrix and name |
 | part, and the representation items nested in it | the node's mesh; products drawing the same stored tessellations share one mesh |
-| plain or compressed tessellation | a triangle primitive; fans and strips are triangulated |
+| plain or compressed tessellation | triangle primitives, one per appearance (material, texture, vertex colours); fans and strips are triangulated |
 | wire tessellation | a line primitive (`LINES`) |
+| material | a glTF material (below) |
+| vertex colours | `COLOR_0`, converted to linear, with a white base colour (below) |
+| texture coordinates | `TEXCOORD_0`, as nanoPRC gives them: already in glTF's convention, any texture transform applied |
+| texture (one that colours the surface) | `baseColorTexture`, the pixels encoded as PNG, one image for each distinct one |
 | the model | a scene, converted to glTF's metres and +Y up (below) |
 
 - A file written by `nano_prc_glb_import` comes back with the nodes it started with: the root node
   the import added to convert units and axes is recognised and removed.
 - A product or part with no stored name is read by nanoPRC as "Unnamed Product"; it is written
   unnamed.
-- Not yet written: materials, vertex colours, texture coordinates and textures. Markups and exact
-  geometry are skipped.
+- Markups and exact geometry are skipped. A tessellation nanoPRC cannot read is left out, with a
+  warning, and the rest of the file is written.
+
+### Materials, colours and textures
+
+The export undoes the import's conversions:
+
+| PRC material | glTF material |
+|---|---|
+| diffuse colour | `baseColorFactor` RGB, converted from sRGB to linear |
+| opacity | `baseColorFactor` alpha; below 1, `alphaMode` `BLEND`. PRC stores it as a byte, so 0.5 comes back as 128/255 |
+| shininess s | `roughnessFactor` 1 − s; `metallicFactor` 0 |
+| emissive colour | `emissiveFactor`, converted to linear |
+| black diffuse, ambient and specular with an emissive colour | `KHR_materials_unlit`, in the emissive colour |
+| no material | none; with vertex colours or a texture, a plain white one, since glTF's default material is metallic and draws dark |
+
+- **Vertex colours.** nanoPRC fills every vertex's colour whether or not the file stores any, so they
+  are taken as stored when some vertex is not white (or 0, which the reader gives when vertices
+  carry their own style). A file whose stored colours are all white draws the same either way.
+  Adobe Acrobat draws vertex colours in place of the material colour, so the material's base colour
+  is made white and glTF's multiplication changes nothing; the corners' alphas apply when some are
+  below 1.
+- **Per-triangle styles.** A compressed tessellation whose triangles carry styles of their own
+  becomes one primitive per style.
+- **Textures.** Only a texture that colours the surface is written; opacity, reflection and other
+  kinds are left out with a warning, as are further layers of a layered texture. nanoPRC gives no
+  wrap modes, so the sampler repeats, PRC's default. A textured face's material colour multiplies
+  the image, as in PRC.
 
 ## Exit codes
 

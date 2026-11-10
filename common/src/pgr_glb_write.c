@@ -145,6 +145,10 @@ typedef struct
     cgltf_primitive *primitives;
     cgltf_mesh *meshes;
     cgltf_material *materials;
+    cgltf_image *images;
+    cgltf_sampler *samplers;
+    cgltf_texture *textures;
+    cgltf_texture **texture_map; /* scene texture -> written texture, or NULL */
     cgltf_node *nodes;
     cgltf_node **child_ptrs;
     cgltf_node **root_ptrs;
@@ -175,6 +179,10 @@ writer_free(writer *w)
     free(w->primitives);
     free(w->meshes);
     free(w->materials);
+    free(w->images);
+    free(w->samplers);
+    free(w->textures);
+    free(w->texture_map);
     free(w->nodes);
     free(w->child_ptrs);
     free(w->root_ptrs);
@@ -183,30 +191,74 @@ writer_free(writer *w)
     free(w->bin_uri);
 }
 
+/* The length of the well-formed UTF-8 sequence starting at p, or 0 when
+   none does: overlong forms, surrogates and code points past U+10FFFF are
+   not well formed. */
+static size_t
+utf8_length(const unsigned char *p)
+{
+    size_t n, i;
+    uint32_t c;
+
+    if (p[0] < 0x80)
+        return 1;
+    if (p[0] >= 0xC2 && p[0] <= 0xDF)
+        n = 2, c = p[0] & 0x1F;
+    else if (p[0] >= 0xE0 && p[0] <= 0xEF)
+        n = 3, c = p[0] & 0x0F;
+    else if (p[0] >= 0xF0 && p[0] <= 0xF4)
+        n = 4, c = p[0] & 0x07;
+    else
+        return 0;
+    for (i = 1; i < n; i++)
+    {
+        if ((p[i] & 0xC0) != 0x80)    /* also stops at the terminating zero */
+            return 0;
+        c = (c << 6) | (p[i] & 0x3F);
+    }
+    if ((n == 3 && (c < 0x800 || (c >= 0xD800 && c <= 0xDFFF))) || (n == 4 && (c < 0x10000 || c > 0x10FFFF)))
+        return 0;
+    return n;
+}
+
 /* s as the inside of a JSON string: '"' and '\' backslashed, control
    characters as \u00XX; kept in w->names to be freed. NULL for NULL, and
-   *status set when memory runs out. */
+   *status set when memory runs out.
+
+   glTF's JSON must be UTF-8, and names from a PRC file need not be: real
+   files hold Latin-1 ("St\xe4be"). A byte that does not start a
+   well-formed UTF-8 sequence is taken as Latin-1 and written as the
+   character it stands for. */
 static char *
 escaped(writer *w, const char *s, int *status)
 {
     static const char hex[] = "0123456789abcdef";
-    size_t n = 0, o = 0;
+    size_t n = 0, o = 0, len;
     const unsigned char *p;
     char *e;
 
     if (s == NULL)
         return NULL;
-    for (p = (const unsigned char *)s; *p; p++)
-        n += (*p == '"' || *p == '\\') ? 2 : *p < 0x20 ? 6 : 1;
+    for (p = (const unsigned char *)s; *p; p += len ? len : 1)
+    {
+        len = utf8_length(p);
+        n += len == 0 ? 2 : (*p == '"' || *p == '\\') ? 2 : *p < 0x20 ? 6 : len;
+    }
     e = (char *)malloc(n + 1);
     if (e == NULL)
     {
         *status = PGR_ERR_NOMEM;
         return NULL;
     }
-    for (p = (const unsigned char *)s; *p; p++)
+    for (p = (const unsigned char *)s; *p; p += len ? len : 1)
     {
-        if (*p == '"' || *p == '\\')
+        len = utf8_length(p);
+        if (len == 0)
+        {
+            e[o++] = (char)(0xC0 | (*p >> 6));
+            e[o++] = (char)(0x80 | (*p & 0x3F));
+        }
+        else if (*p == '"' || *p == '\\')
         {
             e[o++] = '\\';
             e[o++] = (char)*p;
@@ -221,7 +273,10 @@ escaped(writer *w, const char *s, int *status)
             e[o++] = hex[*p & 15];
         }
         else
-            e[o++] = (char)*p;
+        {
+            memcpy(e + o, p, len);
+            o += len;
+        }
     }
     e[o] = '\0';
     w->names[w->n_names++] = e;
@@ -345,14 +400,65 @@ add_primitive(writer *w, const pgr_primitive *p, cgltf_primitive *cp)
     return PGR_OK;
 }
 
+static cgltf_wrap_mode
+wrap_mode(int wrap)
+{
+    return wrap == PGR_WRAP_CLAMP ? cgltf_wrap_mode_clamp_to_edge
+         : wrap == PGR_WRAP_MIRROR ? cgltf_wrap_mode_mirrored_repeat
+         : cgltf_wrap_mode_repeat;
+}
+
+/* Each scene texture with an image as a glTF image in the buffer, a
+   sampler with its wrap modes, and a texture joining them. */
+static int
+add_textures(writer *w, const pgr_scene *s)
+{
+    uint32_t i;
+    int st = PGR_OK;
+
+    for (i = 0; i < s->num_textures && st == PGR_OK; i++)
+    {
+        const pgr_texture *tx = &s->textures[i];
+        cgltf_buffer_view *v = &w->views[w->d.buffer_views_count];
+        cgltf_image *im = &w->images[w->d.images_count];
+        cgltf_sampler *sm = &w->samplers[w->d.samplers_count];
+        cgltf_texture *t = &w->textures[w->d.textures_count];
+        size_t offset;
+
+        if (tx->bytes == NULL || tx->size == 0)
+            continue;
+        if (bin_append(&w->bin, tx->bytes, tx->size, &offset) != PGR_OK)
+            return PGR_ERR_NOMEM;
+        v->buffer = &w->buffer;
+        v->offset = offset;
+        v->size = tx->size;
+        w->d.buffer_views_count++;
+        im->buffer_view = v;
+        im->mime_type = (char *)(tx->mime == PGR_IMAGE_JPEG ? "image/jpeg" : "image/png");
+        w->d.images_count++;
+        sm->wrap_s = wrap_mode(tx->wrap_s);
+        sm->wrap_t = wrap_mode(tx->wrap_t);
+        w->d.samplers_count++;
+        t->name = escaped(w, tx->name, &st);
+        t->image = im;
+        t->sampler = sm;
+        w->texture_map[i] = t;
+        w->d.textures_count++;
+    }
+    return st;
+}
+
 static void
-fill_material(const pgr_material *m, cgltf_material *cm)
+fill_material(const writer *w, const pgr_scene *s, const pgr_material *m, cgltf_material *cm)
 {
     int k;
 
     cm->has_pbr_metallic_roughness = 1;
     for (k = 0; k < 4; k++)
         cm->pbr_metallic_roughness.base_color_factor[k] = m->base_color[k];
+    if (m->texture >= 0 && (uint32_t)m->texture < s->num_textures)
+        cm->pbr_metallic_roughness.base_color_texture.texture = w->texture_map[m->texture];
+    cm->unlit = m->unlit ? 1 : 0;
     cm->pbr_metallic_roughness.metallic_factor = m->metallic;
     cm->pbr_metallic_roughness.roughness_factor = m->roughness;
     for (k = 0; k < 3; k++)
@@ -427,8 +533,13 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     for (i = 0; i < s->num_nodes; i++)
         n_children += s->nodes[i].num_children;
 
-    /* At most four attributes and one index list per primitive. */
-    w.views = (cgltf_buffer_view *)calloc(5 * n_prims + 1, sizeof(cgltf_buffer_view));
+    /* At most four attributes and one index list per primitive, and one
+       image per texture. */
+    w.views = (cgltf_buffer_view *)calloc(5 * n_prims + s->num_textures + 1, sizeof(cgltf_buffer_view));
+    w.images = (cgltf_image *)calloc(s->num_textures + 1, sizeof(cgltf_image));
+    w.samplers = (cgltf_sampler *)calloc(s->num_textures + 1, sizeof(cgltf_sampler));
+    w.textures = (cgltf_texture *)calloc(s->num_textures + 1, sizeof(cgltf_texture));
+    w.texture_map = (cgltf_texture **)calloc(s->num_textures + 1, sizeof(cgltf_texture *));
     w.accessors = (cgltf_accessor *)calloc(5 * n_prims + 1, sizeof(cgltf_accessor));
     w.attributes = (cgltf_attribute *)calloc(5 * n_prims + 1, sizeof(cgltf_attribute));
     w.primitives = (cgltf_primitive *)calloc(n_prims + 1, sizeof(cgltf_primitive));
@@ -439,11 +550,13 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
     w.root_ptrs = (cgltf_node **)calloc(s->num_roots + 1, sizeof(cgltf_node *));
     w.mesh_map = (int *)calloc(s->num_meshes + 1, sizeof(int));
     w.scratch = (void **)calloc(n_prims + 1, sizeof(void *));
-    /* One escaped string per node, mesh and material, the scene's name and
-       the generator. */
-    w.names = (char **)calloc((size_t)s->num_nodes + s->num_meshes + s->num_materials + 2, sizeof(char *));
+    /* One escaped string per node, mesh, material and texture, the scene's
+       name and the generator. */
+    w.names = (char **)calloc((size_t)s->num_nodes + s->num_meshes + s->num_materials + s->num_textures + 2,
+                              sizeof(char *));
     if (w.views == NULL || w.accessors == NULL || w.attributes == NULL || w.primitives == NULL
-        || w.meshes == NULL || w.materials == NULL || w.nodes == NULL || w.child_ptrs == NULL
+        || w.meshes == NULL || w.materials == NULL || w.images == NULL || w.samplers == NULL
+        || w.textures == NULL || w.texture_map == NULL || w.nodes == NULL || w.child_ptrs == NULL
         || w.root_ptrs == NULL || w.mesh_map == NULL || w.scratch == NULL || w.names == NULL)
     {
         writer_free(&w);
@@ -452,11 +565,15 @@ pgr_glb_write(const pgr_scene *s, const char *path, const pgr_glb_write_options 
 
     w.d.buffer_views = w.views;
     w.d.accessors = w.accessors;
+    w.d.images = w.images;
+    w.d.samplers = w.samplers;
+    w.d.textures = w.textures;
+    st = add_textures(&w, s);
     w.d.materials = w.materials;
     w.d.materials_count = s->num_materials;
     for (i = 0; i < s->num_materials; i++)
     {
-        fill_material(&s->materials[i], &w.materials[i]);
+        fill_material(&w, s, &s->materials[i], &w.materials[i]);
         w.materials[i].name = escaped(&w, s->materials[i].name, &st);
     }
 
