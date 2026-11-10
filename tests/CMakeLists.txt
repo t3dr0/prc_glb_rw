@@ -9,7 +9,7 @@ file(MAKE_DIRECTORY ${PGR_UNIT_DIR})
 
 foreach(name test_info test_cgltf_link test_math test_hash_dedup
              test_model_path test_glb_read_basic test_glb_write_valid test_prc_write
-             test_round_trip test_prc_read)
+             test_round_trip test_prc_read test_image test_material_map)
     add_executable(${name} unit/${name}.c)
     target_link_libraries(${name} PRIVATE prc_glb_rw_common)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -25,6 +25,7 @@ target_compile_definitions(test_info PRIVATE PGR_EXPECTED_CGLTF_VERSION="${CGLTF
 # writer under test.
 target_sources(test_glb_read_basic PRIVATE fixtures.c)
 target_sources(test_prc_write PRIVATE fixtures.c)
+target_sources(test_material_map PRIVATE fixtures.c)
 
 # The round trips also read nanoPRC's own example PDFs and test files, found
 # from the nano_prc target wherever nanoPRC is.

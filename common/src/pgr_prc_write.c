@@ -33,8 +33,25 @@
      - the scene's roots go under one more node, the root, whose matrix
        turns the scene into PRC's axes and units (pgr_prc_root_matrix).
 
-   Materials, vertex colours and textures are not written yet: every item
-   gets the writer's default material. */
+   Appearance:
+
+     - a primitive's material goes on each item that draws it: the base
+       colour as the diffuse (and ambient) colour, its alpha when the
+       material blends, 1 - roughness as the shininess, and the emissive
+       colour; an unlit material is shown by its emissive colour alone; a
+       masked material is opaque, and a primitive it hides entirely is
+       left out (masked_out);
+     - glTF colours are linear and PRC viewers show the stored values as
+       they are, so every colour is converted to sRGB;
+     - vertex colours become one colour per triangle corner (or per wire
+       point), multiplied by an untextured material's base colour as glTF
+       multiplies them, since viewers draw them without the material
+       colour; their alpha is kept only when the material blends;
+     - a base colour texture is embedded as the file's own PNG or JPEG
+       bytes, multiplied by the base colour as glTF does, with texture
+       coordinates written only for primitives that are textured, v turned
+       over (v' = 1 - v) because glTF puts v = 0 at the top of the image;
+     - a primitive without a material keeps the writer's default. */
 
 #include "pgr_prc.h"
 #include "pgr_math.h"
@@ -53,6 +70,7 @@ typedef struct
     int *tess_of;                       /* flat (mesh, primitive) -> tessellation, or -1 */
     uint32_t *prim_base;                /* per mesh: its first entry in tess_of */
     uint32_t *tri_counts;               /* per tessellation: its one face's triangles */
+    uint8_t *textured;                  /* per tessellation: 1 when it carries texture coordinates */
     prc_api_write_node *nodes;          /* scene nodes, then the root */
     prc_api_write_rep_item *items;
     prc_api_write_node **child_ptrs;
@@ -93,6 +111,7 @@ prc_out_free(prc_out *w)
     free(w->tess_of);
     free(w->prim_base);
     free(w->tri_counts);
+    free(w->textured);
     free(w->nodes);
     free(w->items);
     free(w->child_ptrs);
@@ -110,10 +129,162 @@ to_doubles(prc_out *w, const float *f, size_t n)
     return d;
 }
 
+/* The primitive's material, or NULL. */
+static const pgr_material *
+material_of(const pgr_scene *s, const pgr_primitive *p)
+{
+    return p->material >= 0 ? &s->materials[p->material] : NULL;
+}
+
+/* 1 when the primitive is drawn with its material's texture: there is one,
+   textures are wanted, and the primitive has coordinates to sample it with. */
+static int
+is_textured(const pgr_scene *s, const pgr_primitive *p, const pgr_prc_write_options *o,
+            pgr_messages *msg)
+{
+    const pgr_material *m = material_of(s, p);
+
+    if (o->no_textures || p->mode != PGR_TRIANGLES || m == NULL || m->texture < 0)
+        return 0;
+    if (p->uvs == NULL)
+    {
+        pgr_warn_once(msg, PGR_WARN_NO_UVS,
+                      "a primitive with a textured material has no TEXCOORD_0; it is drawn without the texture");
+        return 0;
+    }
+    return 1;
+}
+
+/* 1 when alphaMode MASK hides all of the primitive, which is then left out.
+
+   glTF draws a pixel of a masked material only where its alpha (the base
+   colour's, times the texture's and the vertex colour's) is at least
+   alphaCutoff, and draws it opaque; PRC has no such test. Without a
+   texture the alpha is known at every corner and varies linearly between
+   them, so the test can be made here: below the cutoff at every corner,
+   nothing is drawn; at or above it at every corner, all of it is, opaque,
+   as the item's material is written. Otherwise (a texture, or corners
+   either side of the cutoff) the primitive is drawn opaque, with a
+   warning. */
+static int
+masked_out(const pgr_scene *s, const pgr_primitive *p, const pgr_prc_write_options *o,
+           pgr_messages *msg)
+{
+    const pgr_material *m = material_of(s, p);
+    float lo, hi;
+    uint32_t k;
+
+    if (m == NULL || m->alpha_mode != PGR_ALPHA_MASK)
+        return 0;
+    if (is_textured(s, p, o, msg))
+    {
+        pgr_warn_once(msg, PGR_WARN_ALPHA_MASK,
+                      "alpha masking (alphaMode MASK) with a texture has no PRC equivalent; it is drawn opaque");
+        return 0;
+    }
+    lo = hi = m->base_color[3];
+    if (p->colors != NULL && !o->no_colors)
+    {
+        lo = 1.0f;
+        hi = 0.0f;
+        for (k = 0; k < p->num_indices; k++)
+        {
+            float a = m->base_color[3] * p->colors[4 * p->indices[k] + 3];
+
+            if (a < lo)
+                lo = a;
+            if (a > hi)
+                hi = a;
+        }
+    }
+    if (hi < m->alpha_cutoff)
+    {
+        pgr_warn_once(msg, PGR_WARN_MASKED_OUT,
+                      "a primitive whose alpha is below its material's alphaCutoff everywhere is left out, "
+                      "as glTF draws none of it");
+        return 1;
+    }
+    if (lo < m->alpha_cutoff)
+        pgr_warn_once(msg, PGR_WARN_ALPHA_MASK,
+                      "alpha masking (alphaMode MASK) of part of a primitive has no PRC equivalent; "
+                      "it is drawn opaque");
+    return 0;
+}
+
+/* What vertex colours are multiplied by, in linear RGBA.
+
+   glTF multiplies a vertex colour by the material's base colour. Adobe
+   Acrobat and PDF-XChange Editor draw a corner's own colour without the
+   item's material colour (checked by eye on 10 November 2026: a triangle
+   with a grey material looked the same as one without), so the base colour
+   is multiplied in here; not for a textured primitive, whose image the
+   material colour already multiplies. glTF uses alpha only when the
+   material blends, so otherwise the factor's alpha is 0, meaning opaque. */
+static void
+color_factor(const pgr_material *m, int textured, float f[4])
+{
+    int k;
+
+    for (k = 0; k < 4; k++)
+        f[k] = m != NULL && !textured ? m->base_color[k] : 1.0f;
+    if (m == NULL || m->alpha_mode != PGR_ALPHA_BLEND)
+        f[3] = 0.0f;
+    else if (textured)
+        f[3] = 1.0f;
+}
+
+/* Vertex v's colour times f (color_factor) in linear values, then in sRGB;
+   its alpha times f's, or 1 when f's alpha is 0. */
+static void
+srgb_color(const float *colors, uint32_t v, const float f[4], float out[4])
+{
+    int k;
+
+    for (k = 0; k < 3; k++)
+        out[k] = (float)pgr_linear_to_srgb(colors[4 * v + k] * f[k]);
+    out[3] = f[3] > 0.0f ? colors[4 * v + 3] * f[3] : 1.0f;
+}
+
+/* One colour per triangle corner, in sRGB, with alpha only when some corner
+   is not opaque. */
+static int
+corner_colors(prc_out *w, const pgr_primitive *p, const float f[4], prc_api_write_tessellation *t)
+{
+    uint32_t k, n = p->num_indices;
+    int alpha = 0;
+    uint8_t *c;
+
+    for (k = 0; k < n; k++)
+    {
+        float rgba[4];
+
+        srgb_color(p->colors, p->indices[k], f, rgba);
+        if (rgba[3] < 1.0f)
+            alpha = 1;
+    }
+    c = (uint8_t *)own(w, (size_t)n * (alpha ? 4 : 3));
+    if (c == NULL)
+        return PGR_ERR_NOMEM;
+    for (k = 0; k < n; k++)
+    {
+        float rgba[4];
+        int j;
+
+        srgb_color(p->colors, p->indices[k], f, rgba);
+        for (j = 0; j < (alpha ? 4 : 3); j++)
+            c[(size_t)k * (alpha ? 4 : 3) + j] = pgr_unit_to_byte(rgba[j]);
+    }
+    t->vertex_colors = c;
+    t->num_vertex_colors = n;
+    t->vertex_colors_have_alpha = alpha;
+    return PGR_OK;
+}
+
 /* A triangle primitive as a compressed or plain tessellation. */
 static int
-triangle_tessellation(prc_out *w, const pgr_primitive *p, const pgr_prc_write_options *o,
-                      double quant, prc_api_write_tessellation *t, uint32_t *tri_count)
+triangle_tessellation(prc_out *w, const pgr_primitive *p, const pgr_material *m,
+                      const pgr_prc_write_options *o, double quant, int textured,
+                      prc_api_write_tessellation *t, uint32_t *tri_count)
 {
     t->kind = o->triangles ? PRC_API_WRITE_TESS_KIND_TRIANGLES : PRC_API_WRITE_TESS_KIND_COMPRESSED;
     t->positions = to_doubles(w, p->positions, (size_t)p->num_vertices * 3);
@@ -144,42 +315,81 @@ triangle_tessellation(prc_out *w, const pgr_primitive *p, const pgr_prc_write_op
            Compressed recomputes them by itself. */
         t->must_calculate_normals = 1;
     }
+    if (textured)
+    {
+        double *tc = (double *)own(w, (size_t)p->num_vertices * 2 * sizeof(double));
+        uint32_t v;
+
+        if (tc == NULL)
+            return PGR_ERR_NOMEM;
+        for (v = 0; v < p->num_vertices; v++)
+        {
+            tc[2 * v] = p->uvs[2 * v];
+            tc[2 * v + 1] = 1.0 - (double)p->uvs[2 * v + 1];
+        }
+        t->tex_coords = tc;
+        t->num_tex_coords = p->num_vertices;
+        t->tex_indices = p->indices;
+    }
+    if (p->colors != NULL && !o->no_colors)
+    {
+        float f[4];
+
+        color_factor(m, textured, f);
+        return corner_colors(w, p, f, t);
+    }
     return PGR_OK;
+}
+
+/* Point v of a wire: its position, and its colour in sRGB times f
+   (color_factor) when cols is not NULL. */
+static void
+wire_point(const pgr_primitive *p, uint32_t v, const float f[4], float *pts, float *cols, size_t at)
+{
+    memcpy(pts + 3 * at, &p->positions[3 * v], 3 * sizeof(float));
+    if (cols != NULL)
+        srgb_color(p->colors, v, f, cols + 4 * at);
 }
 
 /* A line primitive as a wire tessellation: each run of segments where one
    ends where the next begins becomes one polyline. */
 static int
-wire_tessellation(prc_out *w, const pgr_primitive *p, prc_api_write_tessellation *t)
+wire_tessellation(prc_out *w, const pgr_primitive *p, const pgr_material *m,
+                  const pgr_prc_write_options *o, prc_api_write_tessellation *t)
 {
     uint32_t segs = p->num_indices / 2, k = 0, runs = 0;
     prc_api_write_wire_element *el;
-    float *pts;
+    float *pts, *cols = NULL;
+    float f[4];
     size_t used = 0;
 
+    color_factor(m, 0, f);
     /* At most one element per segment, and two points per segment. */
     el = (prc_api_write_wire_element *)own(w, (size_t)segs * sizeof(*el));
     pts = (float *)own(w, (size_t)segs * 6 * sizeof(float));
     if (el == NULL || pts == NULL)
         return PGR_ERR_NOMEM;
+    if (p->colors != NULL && !o->no_colors)
+    {
+        cols = (float *)own(w, (size_t)segs * 8 * sizeof(float));
+        if (cols == NULL)
+            return PGR_ERR_NOMEM;
+    }
     while (k < segs)
     {
-        float *start = pts + used;
-        uint32_t n = 0, v;
+        size_t first = used;
+        uint32_t n = 0;
 
-        v = p->indices[2 * k];
-        memcpy(pts + used, &p->positions[3 * v], 3 * sizeof(float));
-        used += 3;
+        wire_point(p, p->indices[2 * k], f, pts, cols, used++);
         n++;
         do
         {
-            v = p->indices[2 * k + 1];
-            memcpy(pts + used, &p->positions[3 * v], 3 * sizeof(float));
-            used += 3;
+            wire_point(p, p->indices[2 * k + 1], f, pts, cols, used++);
             n++;
             k++;
         } while (k < segs && p->indices[2 * k] == p->indices[2 * k - 1]);
-        el[runs].positions = start;
+        el[runs].positions = pts + 3 * first;
+        el[runs].colors = cols != NULL ? cols + 4 * first : NULL;
         el[runs].num_vertices = n;
         runs++;
     }
@@ -187,6 +397,81 @@ wire_tessellation(prc_out *w, const pgr_primitive *p, prc_api_write_tessellation
     t->wire_elements = el;
     t->num_wire_elements = runs;
     return PGR_OK;
+}
+
+/* The primitive's material on a representation item. glTF multiplies the
+   texture by the base colour, as nanoPRC's default texture function
+   (modulate) does, so the base colour stays the item's colour whether or
+   not it is textured. */
+static void
+item_material(const pgr_scene *s, const pgr_primitive *p, int textured, prc_api_write_rep_item *it,
+              pgr_messages *msg)
+{
+    const pgr_material *m = material_of(s, p);
+    double rgb[3];
+    int k, emits = 0;
+
+    if (m == NULL)
+        return;
+    it->has_material = 1;
+    for (k = 0; k < 3; k++)
+    {
+        rgb[k] = pgr_linear_to_srgb(m->base_color[k]);
+        it->material_color[k] = rgb[k];
+        if (m->emissive[k] > 0.0f)
+            emits = 1;
+    }
+    it->material_alpha = 1.0;
+    if (m->alpha_mode == PGR_ALPHA_BLEND)
+        it->material_alpha = m->base_color[3] < 0.0f ? 0.0 : m->base_color[3] > 1.0f ? 1.0 : m->base_color[3];
+    it->material_shininess = m->roughness < 0.0f ? 1.0 : m->roughness > 1.0f ? 0.0 : 1.0 - m->roughness;
+
+    if (m->unlit && textured)
+        pgr_warn_once(msg, PGR_WARN_UNLIT,
+                      "an unlit material with a texture is written as an ordinary, lit one");
+    if (m->unlit && !textured)
+    {
+        /* Shown by its emissive colour alone, the nearest PRC comes to no
+           lighting. */
+        it->has_material_slots = 1;
+        for (k = 0; k < 3; k++)
+        {
+            it->material_color[k] = 0.0;
+            it->material_ambient[k] = 0.0;
+            it->material_specular[k] = 0.0;
+            it->material_emissive[k] = rgb[k];
+        }
+        it->material_shininess = 0.0;
+    }
+    else if (emits)
+    {
+        /* Given its own slots, the ambient keeps the base colour and the
+           specular nanoPRC's usual dark grey, as without them. */
+        it->has_material_slots = 1;
+        for (k = 0; k < 3; k++)
+        {
+            it->material_ambient[k] = rgb[k];
+            it->material_specular[k] = 0.2;
+            it->material_emissive[k] = pgr_linear_to_srgb(m->emissive[k]);
+        }
+    }
+
+    if (textured)
+    {
+        const pgr_texture *tx = &s->textures[m->texture];
+
+        it->has_texture = 1;
+        it->texture_image = tx->bytes;
+        it->texture_image_size = tx->size;
+        it->texture_format = tx->mime == PGR_IMAGE_JPEG ? PRC_API_WRITE_TEXTURE_JPEG : PRC_API_WRITE_TEXTURE_PNG;
+        it->texture_function = PRC_API_WRITE_TEXTURE_MODULATE;
+        if (tx->wrap_s == PGR_WRAP_MIRROR || tx->wrap_t == PGR_WRAP_MIRROR)
+            pgr_warn_once(msg, PGR_WARN_WRAP, "mirrored repeat has no PRC equivalent; it is written as repeat");
+        it->texture_wrap_u = tx->wrap_s == PGR_WRAP_CLAMP
+                           ? PRC_API_WRITE_TEXTURE_WRAP_CLAMP_TO_BORDER : PRC_API_WRITE_TEXTURE_WRAP_REPEAT;
+        it->texture_wrap_v = tx->wrap_t == PGR_WRAP_CLAMP
+                           ? PRC_API_WRITE_TEXTURE_WRAP_CLAMP_TO_BORDER : PRC_API_WRITE_TEXTURE_WRAP_REPEAT;
+    }
 }
 
 static void
@@ -398,11 +683,12 @@ pgr_prc_write(const pgr_scene *s, const char *prc_path, const char *pdf_path,
     w.tess_of = (int *)malloc((n_prims + 1) * sizeof(int));
     w.prim_base = (uint32_t *)calloc(s->num_meshes + 1, sizeof(uint32_t));
     w.tri_counts = (uint32_t *)calloc(n_prims + 1, sizeof(uint32_t));
+    w.textured = (uint8_t *)calloc(n_prims + 1, sizeof(uint8_t));
     w.nodes = (prc_api_write_node *)calloc((size_t)s->num_nodes + 1, sizeof(*w.nodes));
     w.items = (prc_api_write_rep_item *)calloc(n_items + 1, sizeof(*w.items));
     w.child_ptrs = (prc_api_write_node **)calloc(n_children + s->num_roots + 1, sizeof(*w.child_ptrs));
     if (w.tess == NULL || w.tess_of == NULL || w.prim_base == NULL || w.tri_counts == NULL
-        || w.nodes == NULL || w.items == NULL || w.child_ptrs == NULL)
+        || w.textured == NULL || w.nodes == NULL || w.items == NULL || w.child_ptrs == NULL)
     {
         prc_out_free(&w);
         return PGR_ERR_NOMEM;
@@ -425,19 +711,28 @@ pgr_prc_write(const pgr_scene *s, const char *prc_path, const char *pdf_path,
                 w.tess_of[base + j] = -1;
                 if (p->num_vertices == 0 || p->num_indices == 0)
                     continue;
+                if (masked_out(s, p, o, msg))
+                {
+                    stats->masked_out++;
+                    continue;
+                }
                 if (p->mode == PGR_LINES)
                 {
-                    st = wire_tessellation(&w, p, t);
+                    st = wire_tessellation(&w, p, material_of(s, p), o, t);
                     stats->wires++;
                     stats->segments += p->num_indices / 2;
                 }
                 else
                 {
-                    st = triangle_tessellation(&w, p, o, quant, t, &w.tri_counts[w.n_tess]);
+                    w.textured[w.n_tess] = (uint8_t)is_textured(s, p, o, msg);
+                    st = triangle_tessellation(&w, p, material_of(s, p), o, quant, w.textured[w.n_tess], t,
+                                               &w.tri_counts[w.n_tess]);
                     if (t->kind == PRC_API_WRITE_TESS_KIND_COMPRESSED)
                         stats->compressed++;
                     stats->triangles += p->num_indices / 3;
                 }
+                if (p->colors != NULL && !o->no_colors)
+                    stats->coloured++;
                 w.tess_of[base + j] = (int)w.n_tess++;
             }
             base += m->num_primitives;
@@ -477,6 +772,11 @@ pgr_prc_write(const pgr_scene *s, const char *prc_path, const char *pdf_path,
                     next_item->kind = w.tess[t].kind == PRC_API_WRITE_TESS_KIND_WIRE
                         ? PRC_API_WRITE_RI_WIRE : PRC_API_WRITE_RI_SURFACE;
                     next_item->biased_tessellation_index = (uint32_t)t + 1;
+                    item_material(s, &m->primitives[j], w.textured[t], next_item, msg);
+                    if (next_item->has_material)
+                        stats->materials++;
+                    if (next_item->has_texture)
+                        stats->textured++;
                     next_item++;
                     wn->num_rep_items++;
                 }

@@ -202,3 +202,31 @@ pgr_mat4_y_up_to_z_up(double scale, double out[16])
     out[9] = -scale;   /* z -> -y */
     out[15] = 1.0;
 }
+
+static double
+clamp_unit(double c)
+{
+    if (!(c > 0.0))
+        return 0.0;
+    return c < 1.0 ? c : 1.0;
+}
+
+double
+pgr_linear_to_srgb(double c)
+{
+    c = clamp_unit(c);
+    return c <= 0.0031308 ? 12.92 * c : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
+}
+
+double
+pgr_srgb_to_linear(double c)
+{
+    c = clamp_unit(c);
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+unsigned char
+pgr_unit_to_byte(double c)
+{
+    return (unsigned char)(clamp_unit(c) * 255.0 + 0.5);
+}

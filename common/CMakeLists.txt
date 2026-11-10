@@ -10,6 +10,7 @@ add_library(prc_glb_rw_common STATIC
             src/pgr_scene.c
             src/pgr_math.c
             src/pgr_hash.c
+            src/pgr_image.c
             src/model_path.c
             src/pgr_glb_read.c
             src/pgr_glb_write.c

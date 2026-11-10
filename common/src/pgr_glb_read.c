@@ -21,7 +21,12 @@
    stay within their buffers. This file turns what cgltf gives into the
    neutral scene:
 
-     - each material's PBR factors (textures come later);
+     - each material's PBR factors, and its base colour texture: the PNG
+       or JPEG bytes as the file holds them, from a buffer view, a data URI
+       or a file beside the glTF, with the sampler's wrap modes. Its
+       KHR_texture_transform is baked into the texture coordinates of each
+       primitive that uses the material. Other textures (normal,
+       occlusion, emissive, metallic-roughness) are skipped with a warning;
      - each mesh's primitives: positions, and when present NORMAL,
        TEXCOORD_0 and COLOR_0, read through cgltf's accessor unpacking,
        which handles strides, normalised integers and sparse accessors;
@@ -40,9 +45,11 @@
    accessors and buffer views), so a crafted file could otherwise make it
    read far outside a buffer. External buffers are found with
    model_path_resolve, which never leaves the glTF's folder, and loaded
-   here rather than by cgltf. */
+   here rather than by cgltf; so are image files. An image is used only if
+   pgr_image_info accepts it, which bounds its bytes and its pixels. */
 
 #include "pgr_glb.h"
+#include "pgr_image.h"
 #include "pgr_math.h"
 #include "model_path.h"
 
@@ -321,21 +328,311 @@ decode_names(cgltf_data *data)
     for (i = 0; i < data->scenes_count; i++)
         if (data->scenes[i].name != NULL)
             cgltf_decode_string(data->scenes[i].name);
+    for (i = 0; i < data->textures_count; i++)
+        if (data->textures[i].name != NULL)
+            cgltf_decode_string(data->textures[i].name);
+    for (i = 0; i < data->images_count; i++)
+        if (data->images[i].name != NULL)
+            cgltf_decode_string(data->images[i].name);
+}
+
+/* The material's base colour texture: the metallic-roughness model's, or
+   failing that the old specular-glossiness extension's diffuse texture. */
+static const cgltf_texture_view *
+base_view(const cgltf_material *cm)
+{
+    if (cm == NULL)
+        return NULL;
+    if (cm->has_pbr_metallic_roughness && cm->pbr_metallic_roughness.base_color_texture.texture != NULL)
+        return &cm->pbr_metallic_roughness.base_color_texture;
+    if (cm->has_pbr_specular_glossiness && cm->pbr_specular_glossiness.diffuse_texture.texture != NULL)
+        return &cm->pbr_specular_glossiness.diffuse_texture;
+    return NULL;
 }
 
 static int
-read_materials(const cgltf_data *data, pgr_scene *scene, pgr_messages *msg)
+base64_value(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+        return c - 'A';
+    if (c >= 'a' && c <= 'z')
+        return c - 'a' + 26;
+    if (c >= '0' && c <= '9')
+        return c - '0' + 52;
+    if (c == '+' || c == '-')
+        return 62;
+    if (c == '/' || c == '_')
+        return 63;
+    return -1;
+}
+
+/* A base64 data URI's payload. The output can be no longer than three
+   quarters of the URI, so the URI bounds the allocation. */
+static int
+decode_data_uri(const char *uri, uint8_t **out, size_t *size)
+{
+    const char *comma = strchr(uri, ',');
+    const char *p;
+    uint8_t *b;
+    size_t n = 0;
+    unsigned acc = 0;
+    int bits = 0;
+
+    *out = NULL;
+    *size = 0;
+    if (comma == NULL || comma - uri < 7 || strncmp(comma - 7, ";base64", 7) != 0)
+        return PGR_ERR_PARSE;
+    if (strlen(comma + 1) / 4 * 3 > PGR_MAX_IMAGE_BYTES + 3)
+        return PGR_ERR_PARSE;
+    b = (uint8_t *)malloc(strlen(comma + 1) / 4 * 3 + 3);
+    if (b == NULL)
+        return PGR_ERR_NOMEM;
+    for (p = comma + 1; *p != '\0' && *p != '='; p++)
+    {
+        int v = base64_value(*p);
+
+        if (v < 0)
+        {
+            free(b);
+            return PGR_ERR_PARSE;
+        }
+        acc = (acc << 6) | (unsigned)v;
+        bits += 6;
+        if (bits >= 8)
+        {
+            bits -= 8;
+            b[n++] = (uint8_t)(acc >> bits);
+        }
+    }
+    *out = b;
+    *size = n;
+    return PGR_OK;
+}
+
+/* An image file named by uri, found beside the glTF by model_path_resolve
+   and read whole, unless it is larger than any image accepted. */
+static int
+read_image_file(const char *gltf_path, const char *raw_uri, unsigned index, uint8_t **out,
+                size_t *size, pgr_messages *msg)
+{
+    char note[1024];
+    char *uri, *file = NULL;
+    FILE *f;
+    long length;
+    int r, st = PGR_OK;
+
+    *out = NULL;
+    *size = 0;
+    uri = pgr_strdup(raw_uri);
+    if (uri == NULL)
+        return PGR_ERR_NOMEM;
+    cgltf_decode_string(uri);
+    cgltf_decode_uri(uri);
+    r = model_path_resolve(gltf_path, uri, &file, note, sizeof(note));
+    free(uri);
+    if (r == MODEL_PATH_NO_MEMORY)
+        return PGR_ERR_NOMEM;
+    if (r == MODEL_PATH_NOT_FOUND)
+    {
+        pgr_warn(msg, "image %u: %s", index, note);
+        return PGR_ERR_PARSE;
+    }
+    if (r == MODEL_PATH_SUBSTITUTED)
+        pgr_warn(msg, "image %u: %s", index, note);
+
+    f = fopen(file, "rb");
+    if (f == NULL || fseek(f, 0, SEEK_END) != 0 || (length = ftell(f)) < 0
+        || (unsigned long)length > PGR_MAX_IMAGE_BYTES || fseek(f, 0, SEEK_SET) != 0)
+    {
+        pgr_warn(msg, "image %u: cannot read %s, or it is larger than %u bytes", index, file,
+                 (unsigned)PGR_MAX_IMAGE_BYTES);
+        st = PGR_ERR_PARSE;
+    }
+    else
+    {
+        *out = (uint8_t *)malloc(length > 0 ? (size_t)length : 1);
+        if (*out == NULL)
+            st = PGR_ERR_NOMEM;
+        else if (fread(*out, 1, (size_t)length, f) != (size_t)length)
+        {
+            pgr_warn(msg, "image %u: cannot read %s", index, file);
+            free(*out);
+            *out = NULL;
+            st = PGR_ERR_PARSE;
+        }
+        else
+            *size = (size_t)length;
+    }
+    if (f != NULL)
+        fclose(f);
+    free(file);
+    return st;
+}
+
+static int
+wrap_mode(cgltf_wrap_mode w)
+{
+    return w == cgltf_wrap_mode_clamp_to_edge ? PGR_WRAP_CLAMP
+         : w == cgltf_wrap_mode_mirrored_repeat ? PGR_WRAP_MIRROR
+         : PGR_WRAP_REPEAT;
+}
+
+/* Add glTF texture ct to the scene the first time a material uses it:
+   *index is its scene texture, or -1 when it cannot be used, which is
+   reported once here and leaves the material untextured. map holds what
+   was found for each glTF texture, -2 for not yet tried. */
+static int
+load_texture(const cgltf_data *data, const cgltf_texture *ct, const char *gltf_path, int *map,
+             pgr_scene *scene, int *index, pgr_messages *msg)
+{
+    cgltf_size ti = cgltf_texture_index(data, ct);
+    const cgltf_image *im = ct->image;
+    uint8_t *bytes = NULL;
+    const uint8_t *view_bytes = NULL;
+    size_t size = 0;
+    unsigned ii;
+    uint32_t w, h;
+    int mime = 0, st = PGR_OK, i;
+    pgr_texture *t;
+
+    if (map[ti] != -2)
+    {
+        *index = map[ti];
+        return PGR_OK;
+    }
+    map[ti] = *index = -1;
+    if (im == NULL)
+    {
+        pgr_warn(msg, "texture %u has no PNG or JPEG image (only %s); it is skipped", (unsigned)ti,
+                 ct->has_webp ? "a WebP one" : ct->has_basisu ? "a KTX2 one" : "none at all");
+        return PGR_OK;
+    }
+    ii = (unsigned)cgltf_image_index(data, im);
+    if (im->buffer_view != NULL)
+    {
+        /* check_layout has made sure the view lies within its buffer. */
+        if (im->buffer_view->buffer->data != NULL)
+        {
+            view_bytes = (const uint8_t *)im->buffer_view->buffer->data + im->buffer_view->offset;
+            size = im->buffer_view->size;
+        }
+    }
+    else if (im->uri != NULL && strncmp(im->uri, "data:", 5) == 0)
+        st = decode_data_uri(im->uri, &bytes, &size);
+    else if (im->uri != NULL)
+        st = read_image_file(gltf_path, im->uri, ii, &bytes, &size, msg);
+    if (st == PGR_ERR_NOMEM)
+        return st;
+    if (bytes != NULL)
+        view_bytes = bytes;
+    st = view_bytes != NULL ? pgr_image_info(view_bytes, size, &mime, &w, &h) : PGR_ERR_PARSE;
+    if (st != PGR_OK)
+    {
+        pgr_warn(msg, "image %u is %s; texture %u is skipped", ii,
+                 st == PGR_ERR_UNSUPPORTED ? "not a PNG or JPEG"
+                 : "unreadable, or larger than this tool accepts", (unsigned)ti);
+        free(bytes);
+        return PGR_OK;
+    }
+    if (bytes == NULL)
+    {
+        bytes = (uint8_t *)malloc(size);
+        if (bytes == NULL)
+            return PGR_ERR_NOMEM;
+        memcpy(bytes, view_bytes, size);
+    }
+    i = pgr_scene_add_texture(scene, ct->name != NULL ? ct->name : im->name, &t);
+    if (i < 0)
+    {
+        free(bytes);
+        return PGR_ERR_NOMEM;
+    }
+    t->bytes = bytes;
+    t->size = size;
+    t->mime = mime;
+    if (ct->sampler != NULL)
+    {
+        t->wrap_s = wrap_mode(ct->sampler->wrap_s);
+        t->wrap_t = wrap_mode(ct->sampler->wrap_t);
+    }
+    map[ti] = *index = i;
+    return PGR_OK;
+}
+
+/* Bake the base colour texture's KHR_texture_transform into a primitive's
+   texture coordinates, as the extension defines it: uv' = T R S uv, with
+   the rotation counter-clockwise in UV space. */
+static void
+bake_texture_transform(const cgltf_material *cm, float *uvs, uint32_t count)
+{
+    const cgltf_texture_view *v = base_view(cm);
+    double c, s, su, sv;
+    uint32_t i;
+
+    if (v == NULL || !v->has_transform || uvs == NULL)
+        return;
+    c = cos(v->transform.rotation);
+    s = sin(v->transform.rotation);
+    su = v->transform.scale[0];
+    sv = v->transform.scale[1];
+    for (i = 0; i < count; i++)
+    {
+        double u = uvs[2 * i] * su, w = uvs[2 * i + 1] * sv;
+
+        uvs[2 * i] = (float)(c * u + s * w + v->transform.offset[0]);
+        uvs[2 * i + 1] = (float)(-s * u + c * w + v->transform.offset[1]);
+    }
+}
+
+static int
+read_materials(const cgltf_data *data, const char *gltf_path, pgr_scene *scene, pgr_messages *msg)
 {
     cgltf_size i;
+    int *map;
+    int st = PGR_OK;
 
-    for (i = 0; i < data->materials_count; i++)
+    map = (int *)malloc((data->textures_count ? data->textures_count : 1) * sizeof(int));
+    if (map == NULL)
+        return PGR_ERR_NOMEM;
+    for (i = 0; i < data->textures_count; i++)
+        map[i] = -2;
+    for (i = 0; i < data->materials_count && st == PGR_OK; i++)
     {
         const cgltf_material *cm = &data->materials[i];
+        const cgltf_texture_view *view = base_view(cm);
         pgr_material *m;
-        int k;
+        int k, texture = -1;
+
+        if (view != NULL)
+        {
+            int texcoord = view->has_transform && view->transform.has_texcoord
+                         ? view->transform.texcoord : view->texcoord;
+
+            if (texcoord != 0)
+                pgr_warn_once(msg, PGR_WARN_TEXCOORD,
+                              "a texture uses TEXCOORD_%d, and only TEXCOORD_0 is read; it is skipped", texcoord);
+            else
+            {
+                st = load_texture(data, view->texture, gltf_path, map, scene, &texture, msg);
+                if (st != PGR_OK)
+                    break;
+            }
+        }
+        if (cm->normal_texture.texture != NULL || cm->occlusion_texture.texture != NULL
+            || cm->emissive_texture.texture != NULL
+            || cm->pbr_metallic_roughness.metallic_roughness_texture.texture != NULL
+            || cm->pbr_specular_glossiness.specular_glossiness_texture.texture != NULL)
+            pgr_warn_once(msg, PGR_WARN_TEXTURES,
+                          "only base colour textures are read; normal, occlusion, emissive and "
+                          "metallic-roughness textures are skipped");
 
         if (pgr_scene_add_material(scene, cm->name, &m) < 0)
-            return PGR_ERR_NOMEM;
+        {
+            st = PGR_ERR_NOMEM;
+            break;
+        }
+        m->texture = texture;
+        m->unlit = cm->unlit ? 1 : 0;
         if (cm->has_pbr_metallic_roughness)
         {
             for (k = 0; k < 4; k++)
@@ -357,14 +654,9 @@ read_materials(const cgltf_data *data, pgr_scene *scene, pgr_messages *msg)
                       : PGR_ALPHA_OPAQUE;
         m->alpha_cutoff = cm->alpha_cutoff;
         m->double_sided = cm->double_sided ? 1 : 0;
-        if (cm->pbr_metallic_roughness.base_color_texture.texture != NULL
-            || cm->pbr_specular_glossiness.diffuse_texture.texture != NULL
-            || cm->normal_texture.texture != NULL
-            || cm->occlusion_texture.texture != NULL
-            || cm->emissive_texture.texture != NULL)
-            pgr_warn_once(msg, PGR_WARN_TEXTURES, "textures are not read yet; they are skipped");
     }
-    return PGR_OK;
+    free(map);
+    return st;
 }
 
 /* Unpack accessor a, of components floats per element, into a new array
@@ -623,7 +915,11 @@ read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh
     if (st == PGR_OK && nrm != NULL)
         st = unpack(nrm, 3, &normals);
     if (st == PGR_OK && tex != NULL)
+    {
         st = unpack(tex, 2, &uvs);
+        if (st == PGR_OK)
+            bake_texture_transform(cp->material, uvs, nv);
+    }
     if (st == PGR_OK && col != NULL)
         st = unpack(col, 4, &colors);
     if (st == PGR_OK && normals != NULL && !normalise(normals, nv))
@@ -847,7 +1143,7 @@ pgr_glb_read(const char *path, const pgr_glb_read_options *options, pgr_scene *s
                       (unsigned)data->scenes_count, (unsigned)(chosen - data->scenes));
 
     if (st == PGR_OK)
-        st = read_materials(data, scene, msg);
+        st = read_materials(data, path, scene, msg);
     if (st == PGR_OK)
         st = read_meshes(data, scene, msg);
     if (st == PGR_OK)

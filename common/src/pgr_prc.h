@@ -45,6 +45,8 @@ typedef struct pgr_prc_write_options
     double quant_tolerance;    /* compressed only; <= 0 selects PGR_DEFAULT_QUANT_TOLERANCE */
     int no_axis_convert;       /* 1: keep a +Y up scene's axes as they are */
     double units_per_metre;    /* PRC units per metre; <= 0 selects millimetres */
+    int no_colors;             /* 1: leave vertex colours out */
+    int no_textures;           /* 1: leave textures and texture coordinates out */
 } pgr_prc_write_options;
 
 typedef struct pgr_prc_write_stats
@@ -53,8 +55,12 @@ typedef struct pgr_prc_write_stats
     uint32_t tessellations;
     uint32_t compressed;       /* of which compressed */
     uint32_t wires;            /* of which wire (lines) */
+    uint32_t coloured;         /* of which with vertex colours */
     uint32_t triangles;
     uint32_t segments;
+    uint32_t materials;        /* representation items given their own material */
+    uint32_t textured;         /* of which with a texture */
+    uint32_t masked_out;       /* primitives left out because alphaMode MASK hides all of them */
     size_t prc_bytes;
 } pgr_prc_write_stats;
 
@@ -68,6 +74,14 @@ typedef struct pgr_prc_write_stats
    quarter-turn about +X so that +Y becomes +Z, unless no_axis_convert; and
    the scale from the scene's units to the PRC units. The coordinates
    themselves are written unchanged.
+
+   A primitive's material goes on each of its representation items, its
+   colours converted from glTF's linear values to the sRGB values PRC
+   viewers show; vertex colours likewise, one per triangle corner. A base
+   colour texture is embedded as its PNG or JPEG bytes, multiplied by the
+   base colour as glTF does, with the texture coordinates' v turned over
+   (v' = 1 - v), since glTF puts v = 0 at the top of the image and PRC at
+   the bottom. A primitive without a material gets nanoPRC's default.
 
    options and stats may be NULL. Returns PGR_OK or a PGR_ERR_* status. */
 int pgr_prc_write(const pgr_scene *scene, const char *prc_path, const char *pdf_path,
@@ -106,7 +120,8 @@ typedef struct pgr_prc_read_stats
    children becoming roots and its name the model's, so that glTF to PRC to
    glTF gives back the nodes it started with.
 
-   Not read yet: materials, colours, texture coordinates and textures.
+   Not read yet: materials, colours, texture coordinates and textures
+   (pgr_prc_write writes them; reading them back comes next).
    options and stats may be NULL. Returns PGR_OK or a PGR_ERR_* status. */
 int pgr_prc_read(const char *path, const pgr_prc_read_options *options, pgr_scene *scene,
                  pgr_prc_read_stats *stats);

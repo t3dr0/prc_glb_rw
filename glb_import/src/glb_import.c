@@ -32,8 +32,13 @@
  *     PRC's +Z up and its metres into millimetres (--units, and
  *     --no-axis-convert, change that). The coordinates are not changed.
  *
- * Not yet done: materials, vertex colours and textures (every part gets
- * nanoPRC's default material), and Draco-compressed meshes.
+ *   - each material goes on the items that use it, its colours turned from
+ *     glTF's linear values into the sRGB values PRC viewers show; vertex
+ *     colours likewise; a base colour texture is embedded as its PNG or
+ *     JPEG bytes, with the texture coordinates' v turned over (v' = 1 - v)
+ *     for PRC's image origin (--no-colors and --no-texture leave them out).
+ *
+ * Not yet done: Draco-compressed meshes.
  *
  * Usage:
  *   nano_prc_glb_import <input.glb|input.gltf> [output.prc] [output.pdf] [options]
@@ -63,6 +68,8 @@ usage(FILE *out)
         "\n"
         "  --triangles           write plain triangles (default: compressed)\n"
         "  --no-normals          leave the file's normals out; readers compute them\n"
+        "  --no-colors           leave vertex colours out\n"
+        "  --no-texture          leave textures and texture coordinates out\n"
         "  --quant-tolerance F   compressed tessellation's tolerance, as a fraction of\n"
         "                        the bounding-box diagonal (default %g)\n"
         "  --units mm|cm|m|in    units of the PRC (default mm)\n"
@@ -124,6 +131,10 @@ main(int argc, char **argv)
             wopt.triangles = 1;
         else if (strcmp(a, "--no-normals") == 0)
             wopt.no_normals = 1;
+        else if (strcmp(a, "--no-colors") == 0)
+            wopt.no_colors = 1;
+        else if (strcmp(a, "--no-texture") == 0)
+            wopt.no_textures = 1;
         else if (strcmp(a, "--no-axis-convert") == 0)
             wopt.no_axis_convert = 1;
         else if (strcmp(a, "--quant-tolerance") == 0 && i + 1 < argc)
@@ -212,11 +223,16 @@ main(int argc, char **argv)
     if (st == PGR_OK)
         st = pgr_prc_write(&scene, prc_path, pdf_path, &wopt, &stats);
     if (st == PGR_OK)
+    {
         printf("Wrote %s (%lu bytes) and %s: %u nodes, %u tessellations (%u compressed, "
-               "%u wire), %u triangles, %u line segments\n",
+               "%u wire, %u with vertex colours), %u triangles, %u line segments, "
+               "%u items with their own material (%u textured)\n",
                prc_path, (unsigned long)stats.prc_bytes, pdf_path, stats.nodes,
-               stats.tessellations, stats.compressed, stats.wires, stats.triangles,
-               stats.segments);
+               stats.tessellations, stats.compressed, stats.wires, stats.coloured,
+               stats.triangles, stats.segments, stats.materials, stats.textured);
+        if (stats.masked_out > 0)
+            printf("%u primitives left out: their alpha mask hides all of them\n", stats.masked_out);
+    }
     rc = pgr_exit_code(st);
     pgr_scene_free(&scene);
     free(prc_default);

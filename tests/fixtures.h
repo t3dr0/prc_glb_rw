@@ -89,4 +89,25 @@ int fx_edited(const char *path, int (*make)(const char *), const char *old, cons
 /* A triangle whose buffer is the file bin_path, named in the JSON as uri. */
 int fx_external_buffer(const char *gltf_path, const char *uri, const char *bin_path);
 
+/* A 2 x 2 RGBA PNG: red, green on the top row, blue, half-transparent
+   white below, stored top row first as PNG does. */
+extern const unsigned char fx_png_2x2[];
+extern const unsigned fx_png_2x2_size;
+
+/* fx_quad_textured's image_mode: where the image is. */
+#define FX_IMAGE_VIEW     0   /* in a buffer view */
+#define FX_IMAGE_DATA_URI 1   /* its own data URI */
+#define FX_IMAGE_FILE     2   /* a file beside the glTF: its name with .png added */
+#define FX_IMAGE_NOT_PNG  3   /* bytes that are neither PNG nor JPEG, in a buffer view */
+
+/* The unit square in z = 0, corners (0,0) to (1,1), normals +Z, two
+   triangles, textured with fx_png_2x2 by a material "textured" of base
+   colour (0.5, 0.5, 0.5, 1). Its TEXCOORD_0 puts the image the right way
+   up on the square as glTF defines it: (u, v) = (x, 1 - y), v = 0 at the
+   top of the image. tex_info_extra is more JSON members for the
+   baseColorTexture object, starting with a comma, or ""; sampler a sampler
+   object's JSON, or NULL for none; with_uvs 0 leaves TEXCOORD_0 out. */
+int fx_quad_textured(const char *path, int image_mode, const char *tex_info_extra,
+                     const char *sampler, int with_uvs);
+
 #endif

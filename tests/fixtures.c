@@ -682,6 +682,85 @@ fx_external_buffer(const char *gltf_path, const char *uri, const char *bin_path)
     return st;
 }
 
+const unsigned char fx_png_2x2[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d,
+    0x24, 0x00, 0x00, 0x00, 0x13, 0x49, 0x44, 0x41, 0x54, 0x78, 0xda, 0x63, 0xf8, 0xcf, 0xc0, 0xf0,
+    0x1f, 0x0c, 0x81, 0x34, 0x08, 0x34, 0x00, 0x00, 0x49, 0x49, 0x09, 0x78, 0x9c, 0x51, 0x17, 0x92,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+};
+const unsigned fx_png_2x2_size = sizeof(fx_png_2x2);
+
+int
+fx_quad_textured(const char *path, int image_mode, const char *tex_info_extra, const char *sampler,
+                 int with_uvs)
+{
+    static const float pos[12] = { 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0 };
+    static const float nrm[12] = { 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1 };
+    static const float uv[8] = { 0, 1, 1, 1, 1, 0, 0, 0 };
+    static const uint16_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+    static const unsigned char not_png[16] = "GIF89a not a png";
+    fx f;
+    text image = { NULL, 0, 0 }, body = { NULL, 0, 0 };
+    char attrs[128];
+    int p, n, t = -1, ix, st;
+
+    fx_init(&f);
+    p = fx_positions(&f, pos, 4);
+    n = fx_floats(&f, nrm, 4, 3, "VEC3");
+    if (with_uvs)
+        t = fx_floats(&f, uv, 4, 2, "VEC2");
+    ix = fx_indices16(&f, idx, 6);
+    if (with_uvs)
+        snprintf(attrs, sizeof(attrs), "\"POSITION\":%d,\"NORMAL\":%d,\"TEXCOORD_0\":%d", p, n, t);
+    else
+        snprintf(attrs, sizeof(attrs), "\"POSITION\":%d,\"NORMAL\":%d", p, n);
+
+    if (image_mode == FX_IMAGE_VIEW)
+        text_printf(&image, "{\"bufferView\":%d,\"mimeType\":\"image/png\"}",
+                    fx_view(&f, fx_png_2x2, fx_png_2x2_size, 0, 0));
+    else if (image_mode == FX_IMAGE_NOT_PNG)
+        text_printf(&image, "{\"bufferView\":%d,\"mimeType\":\"image/png\"}",
+                    fx_view(&f, not_png, sizeof(not_png), 0, 0));
+    else if (image_mode == FX_IMAGE_DATA_URI)
+    {
+        text_printf(&image, "{\"uri\":\"data:image/png;base64,");
+        base64(&image, fx_png_2x2, fx_png_2x2_size);
+        text_printf(&image, "\"}");
+    }
+    else
+    {
+        /* The file beside the glTF, named in the JSON without its folder. */
+        const char *base = path, *c;
+        char file[512];
+        FILE *out;
+
+        for (c = path; *c; c++)
+            if (*c == '/' || *c == '\\')
+                base = c + 1;
+        snprintf(file, sizeof(file), "%s.png", path);
+        out = fopen(file, "wb");
+        if (out == NULL || fwrite(fx_png_2x2, 1, fx_png_2x2_size, out) != fx_png_2x2_size)
+            die();
+        fclose(out);
+        text_printf(&image, "{\"uri\":\"%s.png\"}", base);
+    }
+
+    text_printf(&body,
+                "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"name\":\"quad\",\"mesh\":0}],"
+                "\"meshes\":[{\"primitives\":[{\"attributes\":{%s},\"indices\":%d,\"material\":0}]}],"
+                "\"materials\":[{\"name\":\"textured\",\"pbrMetallicRoughness\":{"
+                "\"baseColorFactor\":[0.5,0.5,0.5,1],\"baseColorTexture\":{\"index\":0%s}}}],"
+                "\"textures\":[{\"source\":0%s}],\"images\":[%s]",
+                attrs, ix, tex_info_extra, sampler != NULL ? ",\"sampler\":0" : "", image.s);
+    if (sampler != NULL)
+        text_printf(&body, ",\"samplers\":[%s]", sampler);
+    st = fx_save(&f, path, body.s);
+    free(image.s);
+    free(body.s);
+    return st;
+}
+
 int
 fx_no_scene(const char *path)
 {

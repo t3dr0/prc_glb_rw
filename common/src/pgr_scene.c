@@ -176,6 +176,26 @@ pgr_scene_add_material(pgr_scene *s, const char *name, pgr_material **out)
 }
 
 int
+pgr_scene_add_texture(pgr_scene *s, const char *name, pgr_texture **out)
+{
+    void *arr = s->textures;
+    int i = grow(&arr, &s->num_textures, sizeof(pgr_texture));
+    pgr_texture *t;
+
+    s->textures = (pgr_texture *)arr;
+    if (i < 0)
+        return PGR_ERR_NOMEM;
+    t = &s->textures[i];
+    t->wrap_s = t->wrap_t = PGR_WRAP_REPEAT;
+    t->uv_scale[0] = t->uv_scale[1] = 1.0f;
+    if (set_name(&t->name, name) != PGR_OK)
+        return PGR_ERR_NOMEM;
+    if (out != NULL)
+        *out = t;
+    return i;
+}
+
+int
 pgr_mesh_add_primitive(pgr_mesh *m, int mode, pgr_primitive **out)
 {
     void *arr = m->primitives;

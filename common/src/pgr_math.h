@@ -50,4 +50,13 @@ int pgr_mat4_normal_matrix(const double m[16], double n[9]);
    takes PRC back to glTF. */
 void pgr_mat4_y_up_to_z_up(double scale, double out[16]);
 
+/* One colour component between glTF's linear values and the sRGB values
+   PRC viewers show as stored, by the sRGB transfer function of
+   IEC 61966-2-1. The value is clamped to 0..1 first; NaN gives 0. */
+double pgr_linear_to_srgb(double c);
+double pgr_srgb_to_linear(double c);
+
+/* A value in 0..1 as a byte, rounded; clamped, and NaN gives 0. */
+unsigned char pgr_unit_to_byte(double c);
+
 #endif

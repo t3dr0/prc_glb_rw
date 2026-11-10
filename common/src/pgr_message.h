@@ -47,6 +47,12 @@
 #define PGR_WARN_EMPTY_MESH      (1u << 11)
 #define PGR_WARN_EXTENSION       (1u << 12)
 #define PGR_WARN_MULTIPLE_SCENES (1u << 13)
+#define PGR_WARN_TEXCOORD        (1u << 14)
+#define PGR_WARN_ALPHA_MASK      (1u << 15)
+#define PGR_WARN_WRAP            (1u << 16)
+#define PGR_WARN_NO_UVS          (1u << 17)
+#define PGR_WARN_UNLIT           (1u << 18)
+#define PGR_WARN_MASKED_OUT      (1u << 19)
 
 typedef void (*pgr_message_fn)(void *user, int is_error, const char *text);
 

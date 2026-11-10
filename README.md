@@ -7,8 +7,9 @@ PRC (ISO 14739) is the 3D format embedded in 3D PDF files. This repository holds
 tools built on nanoPRC's public C API, with glTF read and written through
 [cgltf](https://github.com/jkuhlmann/cgltf).
 
-**Status: in development.** Both tools convert geometry and the node hierarchy, in both directions;
-materials, vertex colours, textures and Draco are to come.
+**Status: in development.** Both tools convert geometry and the node hierarchy, in both directions.
+The import also writes materials, vertex colours and base colour textures; the export does not read
+them back yet, and Draco is to come.
 
 | Tool | Direction | What it does |
 |---|---|---|
@@ -19,8 +20,8 @@ materials, vertex colours, textures and Draco are to come.
 
 ```
 nano_prc_glb_import <input.glb|input.gltf> [output.prc] [output.pdf]
-                    [--triangles] [--no-normals] [--quant-tolerance F]
-                    [--units mm|cm|m|in] [--no-axis-convert]
+                    [--triangles] [--no-normals] [--no-colors] [--no-texture]
+                    [--quant-tolerance F] [--units mm|cm|m|in] [--no-axis-convert]
 nano_prc_glb_import --version
 ```
 
@@ -33,15 +34,59 @@ Output paths default to the input's name with `.prc` and `.pdf`.
 | triangle primitive (`TRIANGLES`, `TRIANGLE_STRIP`, `TRIANGLE_FAN`) | a compressed tessellation, or with `--triangles` a plain one; strips and fans are triangulated first |
 | line primitive (`LINES`, `LINE_STRIP`, `LINE_LOOP`) | a wire tessellation, connected segments joined into polylines |
 | `POSITION`, `NORMAL` | positions and normals; without normals the reader computes them |
+| `COLOR_0` | vertex colours, one per triangle corner (or wire point), times the base colour, converted to sRGB (see below) |
+| `TEXCOORD_0` | texture coordinates, written only for a textured primitive, with v turned over |
+| material | the material of each item that draws the primitive (below) |
 | scene | under one root node, named after the scene or the file, that converts the axes and units (below) |
 
 - `--quant-tolerance` sets the compressed encoding's tolerance as a fraction of the bounding-box
   diagonal (default `1e-6`).
-- Not yet written: materials (every part gets nanoPRC's default material), vertex colours,
-  texture coordinates and textures. Points, skins, animations, morph targets, cameras and lights are
-  skipped with one warning each.
+- `--no-colors` leaves vertex colours out; `--no-texture` leaves textures and texture coordinates
+  out.
+- Points, skins, animations, morph targets, cameras and lights are skipped with one warning each.
 - A file that requires an extension other than `KHR_texture_transform` or `KHR_materials_unlit`
   is refused (exit code 3), Draco included for now.
+
+### Materials, colours and textures
+
+| glTF material | PRC material |
+|---|---|
+| `baseColorFactor` RGB | the diffuse and ambient colour |
+| `baseColorFactor` alpha | the opacity, when `alphaMode` is `BLEND`; otherwise opaque |
+| `alphaMode` `MASK` | opaque; a primitive the mask hides entirely is left out (see below) |
+| `roughnessFactor` r | shininess 1 − r |
+| `metallicFactor` | not used |
+| `emissiveFactor` | the emissive colour |
+| `KHR_materials_unlit` | black diffuse, ambient and specular, emissive = the base colour; with a texture, an ordinary material and a warning |
+| `baseColorTexture` | the PNG or JPEG bytes as the file holds them, multiplied by the base colour as glTF does |
+| sampler `REPEAT`, `CLAMP_TO_EDGE` | repeat, clamp |
+| sampler `MIRRORED_REPEAT` | repeat, with a warning |
+| `KHR_texture_transform` | baked into the texture coordinates |
+| no material | nanoPRC's default material |
+
+- **Colours.** glTF colours are linear; PRC viewers show the stored values as they are, so every
+  colour (base, emissive, vertex) is converted to sRGB. A linear 0.5 grey is written as 0.735
+  (188 of 255).
+- **Vertex colours** (`COLOR_0`) become one colour per triangle corner. glTF multiplies them by the
+  material's base colour, but Adobe Acrobat and PDF-XChange Editor draw a corner's colour without the
+  material colour, so for an untextured material the base colour is multiplied in when converting.
+  Their alpha is kept only when `alphaMode` is `BLEND` (times the base colour's alpha), as glTF
+  ignores it otherwise.
+- **Texture coordinates.** glTF puts v = 0 at the top of the image and PRC at the bottom, so v is
+  written as 1 − v. Checked by eye in Adobe Acrobat with a test image carrying a letter F.
+- **Textures** come from a buffer view, a data URI, or a file beside the `.gltf` found as below
+  (External files). Only base colour textures on `TEXCOORD_0` are read; normal, occlusion, emissive
+  and metallic-roughness textures are skipped with a warning. An image is used only if it is a PNG or
+  a JPEG of at most 2^28 bytes whose header gives a size of at most 2^28 pixels; otherwise the
+  material keeps its colour without the image, with a warning. KTX2 and WebP images are skipped.
+- A primitive whose material has a texture but which has no `TEXCOORD_0` is drawn untextured, with a
+  warning.
+- **Alpha masks.** glTF draws a pixel of a `MASK` material only where its alpha reaches
+  `alphaCutoff` (0.5 unless given), and then opaque. PRC has no such test, so it is applied when
+  converting. Without a texture the alpha (base colour alpha times any vertex colour alpha) is known
+  at every corner: a primitive below the cut-off at every corner is left out, with a warning, and
+  one at or above it at every corner is drawn opaque. A textured primitive, or one with corners
+  either side of the cut-off, is drawn opaque, with a warning.
 
 ## glb_export
 
@@ -90,8 +135,8 @@ are.
 
 ## External files and untrusted input
 
-- A `.gltf` file's buffers (and, once textures are read, its images) are only ever read from the
-  glTF's folder and its subfolders. A plain relative path down from the glTF is used as written;
+- A `.gltf` file's buffers and images are only ever read from the glTF's folder and its
+  subfolders. A plain relative path down from the glTF is used as written;
   any other, such as `C:\Users\me\scene.bin` or `../scene.bin`, is reduced to its file name and
   looked for in the glTF's folder and then its subfolders, nearest first (four levels down at most,
   alphabetically within a folder, an exact name before one that differs only in letter case). Each

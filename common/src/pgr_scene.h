@@ -68,10 +68,11 @@ typedef struct pgr_material
     float ambient[3];
     float specular[3];
     float shininess;         /* 0..1 */
-    int texture;             /* index into pgr_scene.textures, or -1 */
+    int texture;             /* the base colour texture: index into pgr_scene.textures, or -1 */
     int alpha_mode;          /* PGR_ALPHA_* */
     float alpha_cutoff;
     int double_sided;
+    int unlit;               /* KHR_materials_unlit: shown in its base colour, without lighting */
 } pgr_material;
 
 typedef struct pgr_texture
@@ -81,6 +82,9 @@ typedef struct pgr_texture
     size_t size;
     int mime;                /* PGR_IMAGE_* */
     int wrap_s, wrap_t;      /* PGR_WRAP_* */
+    /* Unused for now: the glTF reader bakes KHR_texture_transform into the
+       primitives' texture coordinates instead, and leaves these at offset 0
+       and scale 1. */
     float uv_offset[2];
     float uv_scale[2];
 } pgr_texture;
@@ -144,6 +148,8 @@ char *pgr_strdup(const char *str);
 int pgr_scene_add_node(pgr_scene *s, const char *name, pgr_node **out);
 int pgr_scene_add_mesh(pgr_scene *s, const char *name, pgr_mesh **out);
 int pgr_scene_add_material(pgr_scene *s, const char *name, pgr_material **out);
+/* A texture with no image yet, repeating both ways, offset 0 and scale 1. */
+int pgr_scene_add_texture(pgr_scene *s, const char *name, pgr_texture **out);
 int pgr_mesh_add_primitive(pgr_mesh *m, int mode, pgr_primitive **out);
 int pgr_node_add_child(pgr_scene *s, uint32_t parent, uint32_t child);
 int pgr_scene_add_root(pgr_scene *s, uint32_t node);
