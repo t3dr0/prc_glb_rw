@@ -392,6 +392,18 @@ test_unlit_and_mask(void)
     }
 }
 
+/* A read-back vertex alpha on 0..1. nanoPRC's reader gave a plain
+   tessellation's stored vertex alpha as the byte, 0..255, until nanoPRC PR
+   #240, and 0..1 after it, as it always did for compressed tessellations and
+   for the colour. A value above 1 can only be a byte, so either reader
+   passes; the alphas tested here are 1, 0.5 and 0.25, none of which is 1/255
+   as a byte. */
+static double
+alpha01(float a)
+{
+    return a > 1.0f ? a / 255.0 : a;
+}
+
 /* The read-back vertex at position (x, y, z), or -1. */
 static int
 vertex_at(const face_info *f, double x, double y, double z, double tol)
@@ -453,18 +465,11 @@ test_vertex_colors(int triangles)
                 PGR_CHECK(a >= 0 && b >= 0 && c >= 0);
                 if (a >= 0 && b >= 0 && c >= 0)
                 {
-                    /* nanoPRC's reader gives a plain tessellation's stored
-                       vertex alpha as the byte, 0..255, and its colour as
-                       0..1 (src/prc_tri_primitives_api.c, the alpha lines of
-                       its colour decoding); compressed gives both as 0..1,
-                       and both give 1 when no alpha is stored. */
-                    double scale = triangles && vc[i].alpha_b < 1.0 ? 255.0 : 1.0;
-
                     PGR_CHECK(near3(f->color[a], vc[i].r, 0, 0, 0.004));
                     PGR_CHECK(near3(f->color[b], 0, vc[i].g, 0, 0.004));
                     PGR_CHECK(near3(f->color[c], 0, 0, vc[i].b, 0.004));
-                    PGR_CHECK(fabs(f->color[b][3] / scale - vc[i].alpha_b) < 0.004);
-                    PGR_CHECK(fabs(f->color[a][3] / scale - (vc[i].alpha_b < 1.0 ? 0.5 : 1.0)) < 0.004);
+                    PGR_CHECK(fabs(alpha01(f->color[b][3]) - vc[i].alpha_b) < 0.004);
+                    PGR_CHECK(fabs(alpha01(f->color[a][3]) - (vc[i].alpha_b < 1.0 ? 0.5 : 1.0)) < 0.004);
                 }
             }
         }
