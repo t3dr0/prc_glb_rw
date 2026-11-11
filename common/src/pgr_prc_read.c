@@ -26,9 +26,9 @@
      - a product's part, and every representation item nested in it, may
        name a tessellation. The API numbers tessellations once per place a
        part is drawn (part_detail_index), the file once per tessellation
-       stored (biased_tess_index); the data is fetched by the first and
-       meshes are shared by the second, so a part drawn twice becomes one
-       mesh;
+       stored in each file structure (tess_file_index, biased_tess_index);
+       the data is fetched by the first and meshes are shared by the
+       second, so a part drawn twice becomes one mesh;
      - a surface tessellation becomes one triangle primitive per
        appearance (material, texture, vertex colours). Every face of a
        compressed tessellation gives the whole mesh, so only face 0 is
@@ -94,7 +94,9 @@ stored_name(const char *name)
    product drawing the same list shares it. */
 typedef struct
 {
-    uint32_t *stored;           /* biased_tess_index of each, in order */
+    uint32_t *stored;           /* file structure and biased_tess_index of each, in
+                                   pairs, in order: the index counts within its
+                                   file structure */
     uint32_t count;
     int mesh;
 } mesh_key;
@@ -106,6 +108,7 @@ typedef struct
     const unsigned char *data;
     uint32_t w, h, ch;
     int index;
+    int translucent;            /* 1: the image has an alpha channel that is not opaque everywhere */
 } tex_key;
 
 typedef struct
@@ -123,6 +126,7 @@ typedef struct
     size_t n_keys, cap_keys;
     tex_key *texs;
     size_t n_texs, cap_texs;
+    const double *xf;           /* local coordinate system of the item being read, or NULL */
 } reader;
 
 /* Add the triangles one primitive draws over a buffer of nv vertices,
@@ -282,14 +286,15 @@ material_index(reader *r, const pgr_material *m)
    are left out. nanoPRC's reader gives no wrap modes; glTF's default,
    repeat, is PRC's too. */
 static int
-texture_index(reader *r, const prc_api_texture *tx)
+texture_index(reader *r, const prc_api_texture *tx, int *translucent)
 {
     size_t i, bytes;
     pgr_texture *out;
     uint8_t *png;
     size_t png_size;
-    int idx;
+    int idx, see_through = 0;
 
+    *translucent = 0;
     if (tx->kind != PRC_API_TEXTURE_KIND_DIFFUSE)
     {
         pgr_warn_once(r->msg, PGR_WARN_TEXTURE_KIND,
@@ -309,7 +314,20 @@ texture_index(reader *r, const prc_api_texture *tx)
     for (i = 0; i < r->n_texs; i++)
         if (r->texs[i].w == tx->width && r->texs[i].h == tx->height && r->texs[i].ch == tx->num_channels
             && memcmp(r->texs[i].data, tx->data, bytes) == 0)
+        {
+            *translucent = r->texs[i].translucent;
             return r->texs[i].index;
+        }
+    /* An image with an alpha channel that is not opaque everywhere is drawn
+       through where it is clear: objekty.stream-159 in prc-db writes its
+       axis labels as black letters on clear images. */
+    if (tx->num_channels == 2 || tx->num_channels == 4)
+        for (i = tx->num_channels - 1; i < bytes; i += tx->num_channels)
+            if (tx->data[i] != 255)
+            {
+                see_through = 1;
+                break;
+            }
 
     idx = -1;
     if (pgr_image_encode_png(tx->data, tx->width, tx->height, tx->num_channels, &png, &png_size) != PGR_OK)
@@ -341,7 +359,9 @@ texture_index(reader *r, const prc_api_texture *tx)
     r->texs[r->n_texs].w = tx->width;
     r->texs[r->n_texs].h = tx->height;
     r->texs[r->n_texs].ch = tx->num_channels;
+    r->texs[r->n_texs].translucent = see_through;
     r->texs[r->n_texs++].index = idx;
+    *translucent = see_through;
     return idx;
 }
 
@@ -400,7 +420,44 @@ typedef struct
 {
     group *g;
     size_t n, cap;
+    /* The local coordinate system of the item being read (column-major),
+       or NULL; nm takes its normals, and flip is 1 when it mirrors. */
+    const double *xf;
+    double nm[9];
+    int flip;
 } group_list;
+
+/* Set gl to place what it reads by the matrix xf (NULL for none). Normals
+   take the cofactor matrix of xf's upper 3x3, which is its inverse
+   transpose times the determinant: with the determinant's sign, and
+   renormalised, the same direction. */
+static void
+groups_place(group_list *gl, const double *xf)
+{
+    double det;
+    int i;
+
+    gl->xf = xf;
+    gl->flip = 0;
+    if (xf == NULL)
+        return;
+    gl->nm[0] = xf[5] * xf[10] - xf[6] * xf[9];
+    gl->nm[1] = xf[6] * xf[8] - xf[4] * xf[10];
+    gl->nm[2] = xf[4] * xf[9] - xf[5] * xf[8];
+    gl->nm[3] = xf[9] * xf[2] - xf[10] * xf[1];
+    gl->nm[4] = xf[10] * xf[0] - xf[8] * xf[2];
+    gl->nm[5] = xf[8] * xf[1] - xf[9] * xf[0];
+    gl->nm[6] = xf[1] * xf[6] - xf[2] * xf[5];
+    gl->nm[7] = xf[2] * xf[4] - xf[0] * xf[6];
+    gl->nm[8] = xf[0] * xf[5] - xf[1] * xf[4];
+    det = xf[0] * gl->nm[0] + xf[4] * gl->nm[3] + xf[8] * gl->nm[6];
+    if (det < 0.0)
+    {
+        gl->flip = 1;
+        for (i = 0; i < 9; i++)
+            gl->nm[i] = -gl->nm[i];
+    }
+}
 
 static void
 groups_free(group_list *gl)
@@ -459,10 +516,11 @@ grow(float **a, uint32_t cap, int per)
     return PGR_OK;
 }
 
-/* Append vertex v to g; its index in g in *out. Colours are converted from
-   sRGB to linear, as material colours are. */
+/* Append vertex v to g, placed by gl's matrix when it has one; its index in
+   g in *out. Colours are converted from sRGB to linear, as material colours
+   are. */
 static int
-group_add_vertex(group *g, const prc_api_vertex *v, uint32_t *out)
+group_add_vertex(group *g, const group_list *gl, const prc_api_vertex *v, uint32_t *out)
 {
     uint32_t n = g->count;
     int k;
@@ -480,11 +538,28 @@ group_add_vertex(group *g, const prc_api_vertex *v, uint32_t *out)
             return PGR_ERR_NOMEM;
         g->cap = cap;
     }
-    for (k = 0; k < 3; k++)
+    if (gl->xf != NULL)
     {
-        g->pos[3 * n + k] = v->position[k];
-        g->nrm[3 * n + k] = v->normal[k];
+        const double *m = gl->xf;
+        double len = 0.0, nn[3];
+
+        for (k = 0; k < 3; k++)
+        {
+            g->pos[3 * n + k] = (float)(m[k] * v->position[0] + m[4 + k] * v->position[1]
+                                        + m[8 + k] * v->position[2] + m[12 + k]);
+            nn[k] = gl->nm[k] * v->normal[0] + gl->nm[3 + k] * v->normal[1] + gl->nm[6 + k] * v->normal[2];
+            len += nn[k] * nn[k];
+        }
+        len = sqrt(len);
+        for (k = 0; k < 3; k++)
+            g->nrm[3 * n + k] = len > 0.0 ? (float)(nn[k] / len) : v->normal[k];
     }
+    else
+        for (k = 0; k < 3; k++)
+        {
+            g->pos[3 * n + k] = v->position[k];
+            g->nrm[3 * n + k] = v->normal[k];
+        }
     if (!v->normal_set)
         g->all_normals = 0;
     if (g->textured)
@@ -548,7 +623,7 @@ add_corners(group_list *gl, int gi, const prc_api_tess_vertex_buffer *b, vertex_
 
         if (vm->group[v] != gi)
         {
-            st = group_add_vertex(g, &b->vertices[v], &vm->index[v]);
+            st = group_add_vertex(g, gl, &b->vertices[v], &vm->index[v]);
             if (st != PGR_OK)
                 break;
             vm->group[v] = gi;
@@ -567,6 +642,7 @@ typedef struct
 {
     const prc_api_material *material;   /* NULL: none */
     int texture;                        /* scene texture, or -1 */
+    int texture_translucent;            /* 1: its image is clear in places */
     int colored, translucent;
     int has_style_color;                /* 1: no material, and every vertex in style_color */
     float style_color[4];
@@ -601,9 +677,10 @@ face_appearance(reader *r, const prc_api_tess *t, const prc_api_face *face,
     a->material = face->is_material ? &face->material
                 : (t->is_material || face->is_texture) ? &t->tess_material : NULL;
     a->texture = -1;
+    a->texture_translucent = 0;
     if (face->is_texture)
     {
-        a->texture = texture_index(r, &face->texture);
+        a->texture = texture_index(r, &face->texture, &a->texture_translucent);
         if (a->texture < -1)
             return a->texture;
     }
@@ -646,11 +723,22 @@ group_material(reader *r, const appearance *a, const prc_api_vertex *per_vertex,
     else
         return -1;
     if (textured)
+    {
         m.texture = a->texture;
+        if (a->texture_translucent)
+            m.alpha_mode = PGR_ALPHA_BLEND;
+    }
     if (colored)
     {
+        /* The corners' colours take the material colour's place, and the
+           material's emission is left out with it: glTF adds emission on
+           top, so a white one (objekty.stream-159 in prc-db) draws every
+           corner white, where Adobe Acrobat draws the colours. */
         for (k = 0; k < 3; k++)
+        {
             m.base_color[k] = 1.0f;
+            m.emissive[k] = 0.0f;
+        }
         m.unlit = 0;
         if (a->translucent)
         {
@@ -813,13 +901,14 @@ add_surface(reader *r, uint32_t k, pgr_mesh *mesh)
     prc_api_tess *t = &r->tess[k];
     int compressed = t->type == PRC_API_TESS_3D_Compressed;
     size_t faces = compressed ? (t->num_faces > 0 ? 1 : 0) : t->num_faces;
-    group_list gl = { NULL, 0, 0 };
+    group_list gl = { NULL, 0, 0, NULL, { 0 }, 0 };
     u32_list tri = { NULL, 0, 0 };
     style_list sl = { NULL, 0, 0, 0 };
     size_t f, j;
     uint32_t m;
     int st = PGR_OK;
 
+    groups_place(&gl, r->xf);
     for (f = 0; f < faces && st == PGR_OK; f++)
     {
         const prc_api_face *face = &t->tess_faces[f];
@@ -916,7 +1005,18 @@ add_surface(reader *r, uint32_t k, pgr_mesh *mesh)
                 st = gi;
                 break;
             }
-            st = add_corners(&gl, gi, b, &vm, &tri.v[m], 3);
+            if (gl.flip)
+            {
+                /* A mirroring coordinate system turns the winding over */
+                uint32_t rev[3];
+
+                rev[0] = tri.v[m];
+                rev[1] = tri.v[m + 2];
+                rev[2] = tri.v[m + 1];
+                st = add_corners(&gl, gi, b, &vm, rev, 3);
+            }
+            else
+                st = add_corners(&gl, gi, b, &vm, &tri.v[m], 3);
         }
         vertex_map_free(&vm);
     }
@@ -937,7 +1037,7 @@ add_wire(reader *r, uint32_t k, pgr_mesh *mesh)
 {
     prc_api_tess *t = &r->tess[k];
     const prc_api_tess_vertex_buffer *b = &t->tess_vertices;
-    group_list gl = { NULL, 0, 0 };
+    group_list gl = { NULL, 0, 0, NULL, { 0 }, 0 };
     u32_list seg = { NULL, 0, 0 };
     vertex_map vm = { NULL, NULL };
     appearance a;
@@ -945,6 +1045,7 @@ add_wire(reader *r, uint32_t k, pgr_mesh *mesh)
     size_t j, m;
     int st = PGR_OK, gi, mat;
 
+    groups_place(&gl, r->xf);
     for (j = 0; j < t->num_line_primitives && st == PGR_OK; j++)
     {
         prc_api_graphic_primitive gp;
@@ -978,6 +1079,7 @@ add_wire(reader *r, uint32_t k, pgr_mesh *mesh)
 
         a.material = t->is_material ? &t->tess_material : NULL;
         a.texture = -1;
+        a.texture_translucent = 0;
         a.colored = vertex_colors(b, a.material != NULL ? a.material->diffuse : NULL, &a.translucent, &uniform);
         style_color(b, uniform, &a);
         mat = group_material(r, &a, NULL, 0, a.colored);
@@ -996,35 +1098,122 @@ add_wire(reader *r, uint32_t k, pgr_mesh *mesh)
     return st;
 }
 
-/* The tessellations a part and its nested items draw: API index and stored
-   index, depth first, as stl_export visits them. */
-static int
-part_tessellations(const reader *r, const prc_api_part *part, u32_list *api, u32_list *stored)
+/* PRC_GRAPHICS_Removed (0x2000), as it appears in the high byte of a
+   behaviour field, behavior_bit_field2 */
+#define PGR_PRC_REMOVED_BYTE2 0x20
+
+/* c = a * b, all column-major 4x4. */
+static void
+mat_mul(const double *a, const double *b, double *c)
 {
-    const prc_api_part **stack;
-    size_t depth = 0, cap = 16, i;
+    int row, col, k;
+
+    for (col = 0; col < 4; col++)
+        for (row = 0; row < 4; row++)
+        {
+            double s = 0.0;
+
+            for (k = 0; k < 4; k++)
+                s += a[k * 4 + row] * b[col * 4 + k];
+            c[col * 4 + row] = s;
+        }
+}
+
+/* An item waiting to be visited, with the placement of its parent's frame
+   (has: 0 for none). */
+typedef struct
+{
+    const prc_api_part *item;
+    double xf[16];
+    int has;
+} part_visit;
+
+/* The tessellations a part and its nested items draw: API index and stored
+   index, depth first, as stl_export visits them. An item with a local
+   coordinate system is placed by it, within its parent's: xfs gets each
+   tessellation's matrix (16 doubles, column-major) and has whether it has
+   one; *placed is set when any has. */
+static int
+part_tessellations(const reader *r, const prc_api_part *part, u32_list *api, u32_list *stored,
+                   double **xfs, uint8_t **has, int *placed)
+{
+    part_visit *stack;
+    size_t depth = 0, cap = 16, i, n = 0, ncap = 0;
     int st = PGR_OK;
 
-    stack = (const prc_api_part **)malloc(cap * sizeof(*stack));
+    *xfs = NULL;
+    *has = NULL;
+    *placed = 0;
+    stack = (part_visit *)malloc(cap * sizeof(*stack));
     if (stack == NULL)
         return PGR_ERR_NOMEM;
-    stack[depth++] = part;
+    stack[depth].item = part;
+    memset(stack[depth].xf, 0, sizeof(stack[depth].xf));
+    stack[depth++].has = 0;
     while (depth > 0 && st == PGR_OK)
     {
-        const prc_api_part *item = stack[--depth];
+        part_visit v = stack[--depth];
+        const prc_api_part *item = v.item;
 
+        /* A removed item is not drawn, nor what it holds */
+        if (item->behavior_bit_field2 & PGR_PRC_REMOVED_BYTE2)
+            continue;
+        if (item->biased_local_coordinate_index != 0)
+        {
+            prc_api_transform own;
+
+            if (prc_api_get_local_coordinate_system(r->ctx, r->data, item->tess_file_index,
+                                                    item->biased_local_coordinate_index, &own) == 0
+                && !own.is_identity)
+            {
+                if (v.has)
+                {
+                    double parent[16];
+
+                    memcpy(parent, v.xf, sizeof(parent));
+                    mat_mul(parent, own.matrix, v.xf);
+                }
+                else
+                    memcpy(v.xf, own.matrix, sizeof(v.xf));
+                v.has = 1;
+            }
+        }
         if (item->biased_tess_index > 0 && item->part_detail_index < r->nt)
         {
             st = u32_push(api, item->part_detail_index);
             if (st == PGR_OK)
+                st = u32_push(stored, item->tess_file_index);
+            if (st == PGR_OK)
                 st = u32_push(stored, item->biased_tess_index);
+            if (st == PGR_OK && n == ncap)
+            {
+                size_t c = ncap ? ncap * 2 : 16;
+                double *bx = (double *)realloc(*xfs, c * 16 * sizeof(double));
+                uint8_t *bh = bx != NULL ? (uint8_t *)realloc(*has, c) : NULL;
+
+                if (bx != NULL)
+                    *xfs = bx;
+                if (bh == NULL)
+                    st = PGR_ERR_NOMEM;
+                else
+                {
+                    *has = bh;
+                    ncap = c;
+                }
+            }
+            if (st == PGR_OK)
+            {
+                memcpy(*xfs + 16 * n, v.xf, sizeof(v.xf));
+                (*has)[n++] = (uint8_t)v.has;
+                if (v.has)
+                    *placed = 1;
+            }
         }
         for (i = item->num_rep_items; i > 0 && st == PGR_OK; i--)
         {
             if (depth == cap)
             {
-                const prc_api_part **bigger =
-                    (const prc_api_part **)realloc((void *)stack, cap * 2 * sizeof(*stack));
+                part_visit *bigger = (part_visit *)realloc(stack, cap * 2 * sizeof(*stack));
 
                 if (bigger == NULL)
                 {
@@ -1034,44 +1223,58 @@ part_tessellations(const reader *r, const prc_api_part *part, u32_list *api, u32
                 stack = bigger;
                 cap *= 2;
             }
-            stack[depth++] = &item->rep_items[i - 1];
+            stack[depth] = v;
+            stack[depth++].item = &item->rep_items[i - 1];
         }
     }
-    free((void *)stack);
+    free(stack);
     return st;
 }
 
 /* The mesh for a part: the one already made for the same stored
-   tessellations, or a new one. -1 when the part draws nothing. */
+   tessellations, or a new one. -1 when the part draws nothing. A part with
+   an item placed by a local coordinate system has its vertices placed in
+   its mesh, so it shares with no other part. */
 static int
 mesh_for_part(reader *r, const prc_api_part *part, int *mesh_out)
 {
     u32_list api = { NULL, 0, 0 }, stored = { NULL, 0, 0 };
+    double *xfs = NULL;
+    uint8_t *has = NULL;
     size_t i;
     uint32_t j;
-    int st, m = -1;
+    int st, m = -1, placed = 0;
 
     *mesh_out = -1;
-    st = part_tessellations(r, part, &api, &stored);
+    st = part_tessellations(r, part, &api, &stored, &xfs, &has, &placed);
     if (st != PGR_OK || api.n == 0)
     {
         free(api.v);
         free(stored.v);
+        free(xfs);
+        free(has);
         return st;
     }
-    for (i = 0; i < r->n_keys; i++)
+    for (i = 0; i < r->n_keys && !placed; i++)
         if (r->keys[i].count == stored.n
             && memcmp(r->keys[i].stored, stored.v, stored.n * sizeof(uint32_t)) == 0)
         {
             *mesh_out = r->keys[i].mesh;
             free(api.v);
             free(stored.v);
+            free(xfs);
+            free(has);
             return PGR_OK;
         }
 
     m = pgr_scene_add_mesh(r->s, stored_name(part->name), NULL);
     if (m < 0)
         st = PGR_ERR_NOMEM;
+    /* A key no other part can have: the stored indices then a marker and
+       this mesh's index */
+    if (st == PGR_OK && placed)
+        if ((st = u32_push(&stored, 0xffffffffu)) == PGR_OK)
+            st = u32_push(&stored, (uint32_t)m);
     for (j = 0; j < api.n && st == PGR_OK; j++)
     {
         prc_api_tess *t = &r->tess[api.v[j]];
@@ -1079,6 +1282,7 @@ mesh_for_part(reader *r, const prc_api_part *part, int *mesh_out)
 
         if (r->unread[api.v[j]])
             continue;
+        r->xf = has[j] ? xfs + 16 * j : NULL;
         if (t->type == PRC_API_TESS_3D || t->type == PRC_API_TESS_3D_Compressed)
             st = add_surface(r, api.v[j], mesh);
         else if (t->type == PRC_API_TESS_3D_Wire)
@@ -1124,8 +1328,11 @@ mesh_for_part(reader *r, const prc_api_part *part, int *mesh_out)
             *mesh_out = m;
         }
     }
+    r->xf = NULL;
     free(api.v);
     free(stored.v);
+    free(xfs);
+    free(has);
     return st;
 }
 
@@ -1143,16 +1350,20 @@ static int
 part_draws_nothing(const reader *r, const prc_api_part *part)
 {
     u32_list api = { NULL, 0, 0 }, stored = { NULL, 0, 0 };
-    int none;
+    double *xfs = NULL;
+    uint8_t *has = NULL;
+    int none, placed;
 
     if (part == NULL)
         return 1;
-    if (part_tessellations(r, part, &api, &stored) != PGR_OK)
+    if (part_tessellations(r, part, &api, &stored, &xfs, &has, &placed) != PGR_OK)
         none = 0;
     else
         none = api.n == 0;
     free(api.v);
     free(stored.v);
+    free(xfs);
+    free(has);
     return none;
 }
 
@@ -1203,6 +1414,11 @@ walk_tree(reader *r, const double root_m[16], const double conv[16], double tol)
         int id, mesh = -1, keep_as_is = 0;
         pgr_node *n;
 
+        /* A product marked removed (PRC_GRAPHICS_Removed) no longer
+           appears, and Adobe Acrobat does not draw it or anything under it:
+           the ten oaks of 3D-PDF-Sample-School.stream-48 in prc-db */
+        if (e.p->behavior_bit_field2 & PGR_PRC_REMOVED_BYTE2)
+            continue;
         location_of(e.p, loc);
         /* pgr_prc_write's own root: placed exactly by the conversion, with
            nothing of its own to draw. Leave it out; its children are the
