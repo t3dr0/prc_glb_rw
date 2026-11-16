@@ -15,6 +15,7 @@
 */
 
 #include "pgr_info.h"
+#include "draco_shim.h"
 
 #include "prc_api.h"
 
@@ -45,7 +46,7 @@ pgr_cgltf_version(void)
 int
 pgr_draco_available(void)
 {
-    return 0;
+    return ds_available();
 }
 
 void
@@ -56,7 +57,10 @@ pgr_print_version(FILE *out, const char *tool)
     fprintf(out, "%s %s\n", tool, pgr_version());
     fprintf(out, "  nanoPRC %s\n", prc ? prc : "unknown");
     fprintf(out, "  cgltf %s\n", pgr_cgltf_version());
-    fprintf(out, "  Draco %s\n", pgr_draco_available() ? "built in" : "not built in");
+    if (pgr_draco_available())
+        fprintf(out, "  Draco %s\n", ds_version() != NULL ? ds_version() : "unknown");
+    else
+        fprintf(out, "  Draco not built in\n");
 }
 
 int

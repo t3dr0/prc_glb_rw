@@ -328,11 +328,18 @@ test_refused_and_rejected(void)
     PGR_CHECK(strstr(r.last, "EXT_meshopt_compression") != NULL);
     pgr_scene_free(&r.scene);
 
+    /* Required Draco, though this triangle is not compressed: a build
+       with Draco reads it, one without refuses it, naming the option that
+       adds Draco. */
     load(&r, "requires_draco", make_draco);
-    PGR_CHECK(r.status == PGR_ERR_UNSUPPORTED);
-    PGR_CHECK(strstr(r.last, "KHR_draco_mesh_compression") != NULL);
-    /* No build option reads Draco yet, so the message must not point at one */
-    PGR_CHECK(strstr(r.last, "PRC_GLB_WITH_DRACO") == NULL);
+    if (ds_available())
+        PGR_CHECK(r.status == PGR_OK);
+    else
+    {
+        PGR_CHECK(r.status == PGR_ERR_UNSUPPORTED);
+        PGR_CHECK(strstr(r.last, "KHR_draco_mesh_compression") != NULL);
+        PGR_CHECK(strstr(r.last, "-DPRC_GLB_WITH_DRACO=ON") != NULL);
+    }
     pgr_scene_free(&r.scene);
 
     /* An extension that only changes appearance is accepted. */

@@ -777,3 +777,46 @@ fx_no_scene(const char *path)
              p, ix);
     return fx_save(&f, path, body);
 }
+
+int
+fx_draco(const char *path, const void *blob, size_t blob_size, unsigned count, unsigned index_count,
+         int position_id, int normal_id, int fallback)
+{
+    fx f;
+    char body[1024], attrs[128], map[128];
+    int view, p, n = -1, ix;
+
+    fx_init(&f);
+    view = fx_view(&f, blob, blob_size, 0, 0);
+    if (fallback)
+    {
+        p = fx_positions(&f, tri_pos, 3);
+        ix = fx_indices16(&f, tri_idx, 3);
+    }
+    else
+    {
+        p = fx_accessor(&f, -1, GL_FLOAT, (int)count, "VEC3",
+                        ",\"min\":[-1,-1,-1],\"max\":[1,1,1]");
+        if (normal_id >= 0)
+            n = fx_accessor(&f, -1, GL_FLOAT, (int)count, "VEC3", "");
+        ix = fx_accessor(&f, -1, GL_UNSIGNED_INT, (int)index_count, "SCALAR", "");
+    }
+    if (n >= 0)
+    {
+        snprintf(attrs, sizeof(attrs), "\"POSITION\":%d,\"NORMAL\":%d", p, n);
+        snprintf(map, sizeof(map), "\"POSITION\":%d,\"NORMAL\":%d", position_id, normal_id);
+    }
+    else
+    {
+        snprintf(attrs, sizeof(attrs), "\"POSITION\":%d", p);
+        snprintf(map, sizeof(map), "\"POSITION\":%d", position_id);
+    }
+    snprintf(body, sizeof(body),
+             "\"extensionsUsed\":[\"KHR_draco_mesh_compression\"]%s,"
+             "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+             "\"meshes\":[{\"primitives\":[{\"attributes\":{%s},\"indices\":%d,"
+             "\"extensions\":{\"KHR_draco_mesh_compression\":{\"bufferView\":%d,\"attributes\":{%s}}}}]}]",
+             fallback ? "" : ",\"extensionsRequired\":[\"KHR_draco_mesh_compression\"]", attrs, ix, view,
+             map);
+    return fx_save(&f, path, body);
+}

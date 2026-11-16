@@ -24,6 +24,10 @@
 #ifndef PGR_EXPECTED_CGLTF_VERSION
 #define PGR_EXPECTED_CGLTF_VERSION "unknown"
 #endif
+/* 1 in a build with Draco, as CMake says; else 0. */
+#ifndef PGR_EXPECTED_DRACO
+#define PGR_EXPECTED_DRACO 0
+#endif
 
 int
 main(void)
@@ -35,7 +39,7 @@ main(void)
     PGR_CHECK(strcmp(pgr_cgltf_version(), "unknown") != 0);
     PGR_CHECK(strcmp(pgr_version(), "unknown") != 0);
     PGR_CHECK(prc_api_get_version() != NULL);
-    PGR_CHECK(pgr_draco_available() == 0);
+    PGR_CHECK(pgr_draco_available() == PGR_EXPECTED_DRACO);
 
     PGR_CHECK(pgr_has_extension("model.glb", ".glb"));
     PGR_CHECK(pgr_has_extension("MODEL.GLB", ".glb"));

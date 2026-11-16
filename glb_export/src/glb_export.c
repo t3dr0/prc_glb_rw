@@ -31,8 +31,8 @@
  *     glb_import comes back with the nodes it started with: the root that
  *     glb_import added for the conversion is recognised and removed.
  *
- * Not yet done: materials, vertex colours, texture coordinates and
- * textures, and Draco compression.
+ * With --draco, in a build with Draco, each triangle primitive is
+ * compressed with KHR_draco_mesh_compression; lines are left as they are.
  *
  * Usage:
  *   nano_prc_glb_export <input.pdf|input.prc> <output.glb|output.gltf> [options]
@@ -43,6 +43,7 @@
 #include "pgr_prc.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define TOOL "nano_prc_glb_export"
@@ -59,7 +60,29 @@ usage(FILE *out)
         "\n"
         "  --units mm|cm|m|in    units of the PRC (default mm)\n"
         "  --no-axis-convert     keep the PRC's +Z up instead of turning it to +Y up\n"
+        "  --draco               compress triangle meshes with Draco\n"
+        "                        (KHR_draco_mesh_compression; needs a build with Draco)\n"
+        "  --draco-qpos N        Draco quantisation bits for positions (default 14),\n"
+        "  --draco-qnorm N         normals (10), texture coordinates (12) and\n"
+        "  --draco-quv N           colours (8): 1 to 30, or 0 for none\n"
+        "  --draco-qcolor N\n"
+        "  --draco-speed N       Draco encoding and decoding speed, 0 (smallest)\n"
+        "                        to 10 (fastest; default 5)\n"
         "  --version             print versions and exit\n");
+}
+
+/* An option's whole-number value s, from lo to hi, into *out; 0 when s is
+   not one. */
+static int
+int_arg(const char *s, int lo, int hi, int *out)
+{
+    char *end;
+    long v = strtol(s, &end, 10);
+
+    if (end == s || *end != '\0' || v < lo || v > hi)
+        return 0;
+    *out = (int)v;
+    return 1;
 }
 
 int
@@ -71,11 +94,13 @@ main(int argc, char **argv)
     pgr_glb_write_options wopt;
     pgr_messages msg;
     pgr_scene scene;
-    int i, st, rc;
+    ds_encode_options dopt;
+    int i, st, rc, draco_tuned = 0;
 
     memset(&ropt, 0, sizeof(ropt));
     memset(&wopt, 0, sizeof(wopt));
     memset(&msg, 0, sizeof(msg));
+    ds_encode_options_default(&dopt);
     for (i = 1; i < argc; i++)
     {
         const char *a = argv[i];
@@ -92,6 +117,32 @@ main(int argc, char **argv)
         }
         if (strcmp(a, "--no-axis-convert") == 0)
             ropt.no_axis_convert = 1;
+        else if (strcmp(a, "--draco") == 0)
+            wopt.draco = 1;
+        else if (strcmp(a, "--draco-qpos") == 0 || strcmp(a, "--draco-qnorm") == 0
+                 || strcmp(a, "--draco-quv") == 0 || strcmp(a, "--draco-qcolor") == 0
+                 || strcmp(a, "--draco-speed") == 0)
+        {
+            int speed = strcmp(a, "--draco-speed") == 0;
+            int v;
+
+            if (i + 1 >= argc || !int_arg(argv[++i], 0, speed ? 10 : 30, &v))
+            {
+                fprintf(stderr, TOOL ": %s takes a whole number from 0 to %d\n", a, speed ? 10 : 30);
+                return PGR_EXIT_USAGE;
+            }
+            if (speed)
+                dopt.encode_speed = dopt.decode_speed = v;
+            else if (strcmp(a, "--draco-qpos") == 0)
+                dopt.qbits_position = v;
+            else if (strcmp(a, "--draco-qnorm") == 0)
+                dopt.qbits_normal = v;
+            else if (strcmp(a, "--draco-quv") == 0)
+                dopt.qbits_texcoord = v;
+            else
+                dopt.qbits_color = v;
+            draco_tuned = 1;
+        }
         else if (strcmp(a, "--units") == 0 && i + 1 < argc)
         {
             const char *u = argv[++i];
@@ -143,6 +194,19 @@ main(int argc, char **argv)
         fprintf(stderr, TOOL ": the output must be a .glb or .gltf file: %s\n", output);
         return PGR_EXIT_USAGE;
     }
+
+    if (draco_tuned && !wopt.draco)
+    {
+        fprintf(stderr, TOOL ": the --draco-... options need --draco\n");
+        return PGR_EXIT_USAGE;
+    }
+    if (wopt.draco && !pgr_draco_available())
+    {
+        fprintf(stderr, TOOL ": --draco needs a build with Draco: "
+                "configure prc_glb_rw with -DPRC_GLB_WITH_DRACO=ON\n");
+        return PGR_EXIT_UNSUPPORTED;
+    }
+    wopt.draco_options = &dopt;
 
     pgr_scene_init(&scene);
     ropt.messages = &msg;

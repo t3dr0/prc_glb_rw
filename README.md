@@ -8,7 +8,9 @@ tools built on nanoPRC's public C API, with glTF read and written through
 [cgltf](https://github.com/jkuhlmann/cgltf).
 
 **Status: in development.** Both tools convert geometry, the node hierarchy, materials, vertex
-colours and base colour textures, in both directions. Draco is to come.
+colours and base colour textures, in both directions. Draco mesh compression
+(`KHR_draco_mesh_compression`) is read and written by a build with Draco, which is optional (see
+[Draco](#draco)).
 
 | Tool | Direction | What it does |
 |---|---|---|
@@ -43,8 +45,11 @@ Output paths default to the input's name with `.prc` and `.pdf`.
 - `--no-colors` leaves vertex colours out; `--no-texture` leaves textures and texture coordinates
   out.
 - Points, skins, animations, morph targets, cameras and lights are skipped with one warning each.
-- A file that requires an extension other than `KHR_texture_transform` or `KHR_materials_unlit`
-  is refused (exit code 3), Draco included for now.
+- A file that requires an extension other than `KHR_texture_transform`, `KHR_materials_unlit` or
+  (in a build with Draco) `KHR_draco_mesh_compression` is refused (exit code 3).
+- Draco-compressed primitives are decoded in a build with Draco. Without Draco, a primitive that
+  also has an uncompressed copy is read from that copy, with a warning; a file whose meshes are only
+  in Draco form is refused (exit code 3). See [Draco](#draco).
 
 ### Materials, colours and textures
 
@@ -92,10 +97,13 @@ Output paths default to the input's name with `.prc` and `.pdf`.
 ```
 nano_prc_glb_export <input.pdf|input.prc> <output.glb|output.gltf>
                     [--units mm|cm|m|in] [--no-axis-convert]
+                    [--draco] [--draco-qpos N] [--draco-qnorm N] [--draco-quv N]
+                    [--draco-qcolor N] [--draco-speed N]
 nano_prc_glb_export --version
 ```
 
 Writes binary glTF for `.glb`, and JSON with a `.bin` of the same name beside it for `.gltf`.
+`--draco` compresses the triangle meshes with Draco (see [Draco](#draco)).
 
 | PRC | Becomes |
 |---|---|
@@ -149,7 +157,7 @@ The export undoes the import's conversions:
 | 0 | success |
 | 1 | bad command line |
 | 2 | the input could not be read or parsed |
-| 3 | the input needs something this build does not do (a required extension it does not handle) |
+| 3 | the input needs something this build does not do (a required extension it does not handle, or Draco in a build without it); also `--draco` in a build without Draco |
 | 4 | the output could not be written |
 
 ## Units and axes
@@ -161,6 +169,48 @@ so a model comes back at its original size and the right way up; for a file the 
 simply removes that root. The coordinates themselves are not changed. In both tools `--units`
 chooses the PRC's units (`mm`, `cm`, `m` or `in`), and `--no-axis-convert` leaves the axes as they
 are.
+
+## Draco
+
+[Draco](https://github.com/google/draco) is Google's mesh compression library, and
+`KHR_draco_mesh_compression` the glTF extension that carries its data. Draco is C++ (Apache-2.0),
+so it is optional: configure with `-DPRC_GLB_WITH_DRACO=ON` (see [Building](#building)).
+`--version` says whether a build has it, and which version.
+
+**Reading** (`nano_prc_glb_import`). A Draco primitive is decoded, and the decoded points and
+triangles replace the primitive's own accessors, since Draco may renumber, merge or split points.
+`POSITION`, `NORMAL`, `TEXCOORD_0` and `COLOR_0` are read from the Draco data. When the Draco data
+cannot be decoded the file is refused (exit code 2), even if an uncompressed copy is present.
+
+**Writing** (`nano_prc_glb_export --draco`). Each triangle primitive is compressed; line primitives
+are left as they are. No uncompressed copy is written, so the extension is listed as required. The
+accessors have no buffer view: their counts, and the positions' `min` and `max`, are taken from
+decoding the compressed data again, so they state exactly what a reader gets. Draco merges points
+whose values are all equal, leaves out points no triangle uses, and leaves out degenerate triangles
+(two corners at one point after merging), so a mesh can come back with fewer points and triangles
+than it had. A primitive Draco cannot compress is written uncompressed, with a warning.
+
+| Option | Quantisation, in bits (0: none, lossless) | Default |
+|---|---|---|
+| `--draco-qpos N` | positions, over the primitive's largest extent | 14 |
+| `--draco-qnorm N` | normals | 10 |
+| `--draco-quv N` | texture coordinates | 12 |
+| `--draco-qcolor N` | vertex colours | 8 |
+| `--draco-speed N` | encoding and decoding speed, 0 (smallest file) to 10 (fastest) | 5 |
+
+At the defaults a position moves by at most one step of 1/16383 of the primitive's largest extent.
+
+Limits:
+
+- Only `TRIANGLES` primitives are read with Draco; a Draco primitive in another mode is refused
+  (exit code 3).
+- cgltf reads the extension's attribute ids as accessor indices, so a file whose Draco ids reach
+  past its last accessor cannot be read. Draco writers number ids from 0, so in practice this needs
+  a file with fewer accessors than attributes in one primitive.
+- An accessor without a buffer view, as every Draco accessor is, may state at most 2^24 elements.
+- Draco allocates what its data says the mesh holds before it can tell whether the data is sound,
+  so a small crafted file can still ask for a large allocation; running out of memory is reported
+  as an error rather than a crash.
 
 ## External files and untrusted input
 
@@ -204,6 +254,14 @@ ctest --test-dir build -C Release
 ```
 
 `PRC_GLB_RW_BUILD_TESTS` (default `ON`) builds the tests.
+
+**With Draco**, add `-DPRC_GLB_WITH_DRACO=ON` (default `OFF`). This enables C++ (C++17) for the
+one file that calls Draco, `common/src/draco_shim.cpp`. An installed Draco found by
+`find_package(draco)` (vcpkg, apt, Homebrew) is used if there is one; otherwise CMake downloads the
+Draco 1.5.9 release from GitHub, checks its SHA-256, and builds it as a static library with its
+tools, tests and transcoder off. To build from a copy already on disk, add
+`-DFETCHCONTENT_SOURCE_DIR_DRACO=/path/to/draco-1.5.9`. The Draco tests (`test_draco_shim`,
+`test_draco_round_trip`) are built only with Draco; `test_draco_common` runs in both kinds of build.
 
 ## References
 

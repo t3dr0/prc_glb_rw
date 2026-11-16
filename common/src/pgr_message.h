@@ -56,6 +56,7 @@
 #define PGR_WARN_TEXTURE_KIND    (1u << 20)
 #define PGR_WARN_TEXTURE_LAYERS  (1u << 21)
 #define PGR_WARN_TEXTURE_IMAGE   (1u << 22)
+#define PGR_WARN_DRACO           (1u << 23)
 
 typedef void (*pgr_message_fn)(void *user, int is_error, const char *text);
 

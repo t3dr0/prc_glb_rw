@@ -27,6 +27,17 @@ target_compile_definitions(prc_glb_rw_common PRIVATE
                            PGR_VERSION="${PRC_GLB_RW_VERSION}"
                            PGR_CGLTF_VERSION="${CGLTF_VERSION}")
 
+# Draco through its C interface, draco_shim.h: the shim, the only C++ in
+# the project, when built with Draco, else a stub that reports it missing.
+if(PRC_GLB_WITH_DRACO)
+    target_sources(prc_glb_rw_common PRIVATE src/draco_shim.cpp)
+    target_link_libraries(prc_glb_rw_common PRIVATE ${PRC_GLB_DRACO_TARGET})
+    set_target_properties(prc_glb_rw_common PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON
+                                                       CXX_EXTENSIONS OFF)
+else()
+    target_sources(prc_glb_rw_common PRIVATE src/draco_stub.c)
+endif()
+
 # cgltf uses fopen and strncpy, and the writer fopen, which MSVC deprecates
 # in favour of its own _s variants.
 if(MSVC)

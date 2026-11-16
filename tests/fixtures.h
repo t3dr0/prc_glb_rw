@@ -25,6 +25,8 @@
 #ifndef FIXTURES_H
 #define FIXTURES_H
 
+#include <stddef.h>
+
 /* A unit cube centred on the origin, each face with its own four vertices
    and normal: 24 vertices, 12 triangles, 16-bit indices. */
 int fx_cube_flat(const char *path);
@@ -88,6 +90,17 @@ int fx_edited(const char *path, int (*make)(const char *), const char *old, cons
 
 /* A triangle whose buffer is the file bin_path, named in the JSON as uri. */
 int fx_external_buffer(const char *gltf_path, const char *uri, const char *bin_path);
+
+/* A one-primitive mesh in KHR_draco_mesh_compression form: blob, the
+   Draco data, in a buffer view of its own, and the extension's map giving
+   POSITION the Draco id position_id, and NORMAL normal_id unless that is
+   negative. Without fallback, the primitive's accessors have no buffer
+   view and state count vertices and index_count indices, and the file
+   lists the extension as required. With fallback, they hold an
+   uncompressed triangle instead (count and index_count are not used, nor
+   is NORMAL), and the extension is only used. */
+int fx_draco(const char *path, const void *blob, size_t blob_size, unsigned count, unsigned index_count,
+             int position_id, int normal_id, int fallback);
 
 /* A 2 x 2 RGBA PNG: red, green on the top row, blue, half-transparent
    white below, stored top row first as PNG does. */

@@ -35,6 +35,11 @@
        vertex dropped;
      - each node's local matrix, mesh and children, and the scene's roots.
 
+   A KHR_draco_mesh_compression primitive is decoded through draco_shim.h
+   when the build has Draco, and its decoded points and triangles replace
+   the accessors' (decode_draco). Without Draco, its uncompressed copy is
+   read if it has one; otherwise it is refused with PGR_ERR_UNSUPPORTED.
+
    Points, skins, animations, morph targets, cameras and lights are skipped
    with one warning per kind. A file that requires an extension this code
    does not handle is refused with PGR_ERR_UNSUPPORTED.
@@ -49,6 +54,7 @@
    pgr_image_info accepts it, which bounds its bytes and its pixels. */
 
 #include "pgr_glb.h"
+#include "draco_shim.h"
 #include "pgr_image.h"
 #include "pgr_math.h"
 #include "model_path.h"
@@ -128,8 +134,10 @@ check_required_extensions(const cgltf_data *data, pgr_messages *msg)
 
         if (strcmp(ext, "KHR_draco_mesh_compression") == 0)
         {
-            pgr_error(msg, "the file uses KHR_draco_mesh_compression, "
-                      "which this version does not read");
+            if (ds_available())
+                continue;
+            pgr_error(msg, "the file uses KHR_draco_mesh_compression, which this build does not "
+                      "read: configure prc_glb_rw with -DPRC_GLB_WITH_DRACO=ON");
             return PGR_ERR_UNSUPPORTED;
         }
         for (k = 0; k < sizeof(accepted_required) / sizeof(accepted_required[0]); k++)
@@ -842,6 +850,133 @@ normalise(float *n, uint32_t count)
     return 1;
 }
 
+int
+pgr_draco_attribute_id(const cgltf_data *data, const cgltf_attribute *at)
+{
+    if (data == NULL || at == NULL || at->data == NULL || at->data < data->accessors
+        || at->data >= data->accessors + data->accessors_count)
+        return -1;
+    return (int)(at->data - data->accessors);
+}
+
+/* A KHR_draco_mesh_compression primitive's positions, and NORMAL,
+   TEXCOORD_0 and COLOR_0 when its Draco data has them, with its triangles
+   as an index stream into them. expected is the vertex count its accessors
+   state; the decoded count is what is used, in *nv. An attribute of the
+   wrong size is skipped with a warning, as for an uncompressed primitive. */
+static int
+decode_draco(const cgltf_data *data, const cgltf_primitive *cp, uint32_t expected,
+             float **positions, float **normals, float **uvs, float **colors, uint32_t **src,
+             uint32_t *n_src, uint32_t *nv, pgr_messages *msg)
+{
+    const cgltf_draco_mesh_compression *dc = &cp->draco_mesh_compression;
+    const cgltf_buffer_view *v = dc->buffer_view;
+    int ids[4] = { -1, -1, -1, -1 };     /* position, normal, texcoord, colour */
+    ds_mesh m;
+    cgltf_size a;
+    uint32_t i;
+    int r;
+
+    if (cp->type != cgltf_primitive_type_triangles)
+    {
+        pgr_error(msg, "a Draco-compressed primitive is not in TRIANGLES mode, which is the only "
+                  "mode read with Draco");
+        return PGR_ERR_UNSUPPORTED;
+    }
+    /* check_layout has made sure the view lies within its buffer. */
+    if (v == NULL || v->buffer == NULL || v->buffer->data == NULL || v->size == 0)
+    {
+        pgr_error(msg, "a Draco-compressed primitive has no data");
+        return PGR_ERR_PARSE;
+    }
+    for (a = 0; a < dc->attributes_count; a++)
+    {
+        const cgltf_attribute *at = &dc->attributes[a];
+        int slot = at->index != 0 ? -1
+                 : at->type == cgltf_attribute_type_position ? 0
+                 : at->type == cgltf_attribute_type_normal ? 1
+                 : at->type == cgltf_attribute_type_texcoord ? 2
+                 : at->type == cgltf_attribute_type_color ? 3 : -1;
+
+        if (slot >= 0)
+            ids[slot] = pgr_draco_attribute_id(data, at);
+    }
+    if (ids[0] < 0)
+    {
+        pgr_error(msg, "a Draco-compressed primitive has no POSITION in its Draco data");
+        return PGR_ERR_PARSE;
+    }
+
+    r = ds_decode((const uint8_t *)v->buffer->data + v->offset, v->size, ids, 4, &m);
+    if (r != DS_OK)
+    {
+        pgr_error(msg, r == DS_ERR_NOMEM ? "out of memory decoding a Draco-compressed primitive"
+                  : "a Draco-compressed primitive cannot be decoded");
+        return r == DS_ERR_NOMEM ? PGR_ERR_NOMEM : PGR_ERR_PARSE;
+    }
+    if (m.num_points == 0 || m.attributes[0].data == NULL || m.attributes[0].num_components != 3
+        || m.num_faces > 0xffffffffu / 3)
+    {
+        ds_mesh_free(&m);
+        pgr_error(msg, "a Draco-compressed primitive has no usable positions");
+        return PGR_ERR_PARSE;
+    }
+    if (m.num_points != expected)
+        pgr_warn_once(msg, PGR_WARN_DRACO,
+                      "a Draco-compressed primitive decodes to %u points where its accessors say %u; "
+                      "the decoded points are used", m.num_points, expected);
+
+    *nv = m.num_points;
+    *positions = m.attributes[0].data;
+    m.attributes[0].data = NULL;
+    if (m.attributes[1].data != NULL && m.attributes[1].num_components == 3)
+    {
+        *normals = m.attributes[1].data;
+        m.attributes[1].data = NULL;
+    }
+    else if (m.attributes[1].data != NULL)
+        pgr_warn_once(msg, PGR_WARN_ATTRIBUTE, "a primitive's NORMAL does not match its positions; it is skipped");
+    if (m.attributes[2].data != NULL && m.attributes[2].num_components == 2)
+    {
+        *uvs = m.attributes[2].data;
+        m.attributes[2].data = NULL;
+    }
+    else if (m.attributes[2].data != NULL)
+        pgr_warn_once(msg, PGR_WARN_ATTRIBUTE, "a primitive's TEXCOORD_0 does not match its positions; it is skipped");
+    if (m.attributes[3].data != NULL && m.attributes[3].num_components == 4)
+    {
+        *colors = m.attributes[3].data;
+        m.attributes[3].data = NULL;
+    }
+    else if (m.attributes[3].data != NULL && m.attributes[3].num_components == 3)
+    {
+        const float *c3 = m.attributes[3].data;
+        float *c4 = (float *)malloc((size_t)m.num_points * 4 * sizeof(float));
+
+        if (c4 == NULL)
+        {
+            ds_mesh_free(&m);
+            return PGR_ERR_NOMEM;
+        }
+        for (i = 0; i < m.num_points; i++)
+        {
+            c4[4 * i] = c3[3 * i];
+            c4[4 * i + 1] = c3[3 * i + 1];
+            c4[4 * i + 2] = c3[3 * i + 2];
+            c4[4 * i + 3] = 1.0f;
+        }
+        *colors = c4;
+    }
+    else if (m.attributes[3].data != NULL)
+        pgr_warn_once(msg, PGR_WARN_ATTRIBUTE, "a primitive's COLOR_0 does not match its positions; it is skipped");
+
+    *src = m.indices;
+    *n_src = 3 * m.num_faces;
+    m.indices = NULL;
+    ds_mesh_free(&m);
+    return PGR_OK;
+}
+
 static int
 read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh,
                pgr_messages *msg)
@@ -851,7 +986,7 @@ read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh
     uint32_t *src = NULL;
     index_list out = { NULL, 0, 0 };
     uint32_t nv, n_src = 0, i, dropped = 0;
-    int mode, st = PGR_OK;
+    int mode, st = PGR_OK, draco = 0;
     cgltf_size a;
     pgr_primitive *p;
 
@@ -895,11 +1030,20 @@ read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh
         pgr_warn_once(msg, PGR_WARN_NO_POSITION, "a primitive without positions is skipped");
         return PGR_OK;
     }
-    if (cp->has_draco_mesh_compression && pos->buffer_view == NULL && !pos->is_sparse)
+    if (cp->has_draco_mesh_compression)
     {
-        pgr_error(msg, "a primitive is stored only with KHR_draco_mesh_compression, "
-                  "which this version does not read");
-        return PGR_ERR_UNSUPPORTED;
+        if (ds_available())
+            draco = 1;
+        else if (pos->buffer_view == NULL && !pos->is_sparse)
+        {
+            pgr_error(msg, "a primitive is stored only with KHR_draco_mesh_compression, which this "
+                      "build does not read: configure prc_glb_rw with -DPRC_GLB_WITH_DRACO=ON");
+            return PGR_ERR_UNSUPPORTED;
+        }
+        else
+            pgr_warn_once(msg, PGR_WARN_DRACO,
+                          "a primitive is also stored with KHR_draco_mesh_compression, which this build "
+                          "does not read; its uncompressed copy is used");
     }
     if (pos->type != cgltf_type_vec3 || pos->count > 0xffffffffu)
     {
@@ -907,21 +1051,33 @@ read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh
         return PGR_OK;
     }
     nv = (uint32_t)pos->count;
-    nrm = usable(nrm, nv, cgltf_type_vec3, cgltf_type_vec3, "NORMAL", msg);
-    tex = usable(tex, nv, cgltf_type_vec2, cgltf_type_vec2, "TEXCOORD_0", msg);
-    col = usable(col, nv, cgltf_type_vec3, cgltf_type_vec4, "COLOR_0", msg);
 
-    st = unpack(pos, 3, &positions);
-    if (st == PGR_OK && nrm != NULL)
-        st = unpack(nrm, 3, &normals);
-    if (st == PGR_OK && tex != NULL)
+    if (draco)
     {
-        st = unpack(tex, 2, &uvs);
-        if (st == PGR_OK)
+        /* The decoded mesh replaces the accessors' data and the index
+           stream: Draco may have reordered the points. */
+        st = decode_draco(data, cp, nv, &positions, &normals, &uvs, &colors, &src, &n_src, &nv, msg);
+        if (st == PGR_OK && uvs != NULL)
             bake_texture_transform(cp->material, uvs, nv);
     }
-    if (st == PGR_OK && col != NULL)
-        st = unpack(col, 4, &colors);
+    else
+    {
+        nrm = usable(nrm, nv, cgltf_type_vec3, cgltf_type_vec3, "NORMAL", msg);
+        tex = usable(tex, nv, cgltf_type_vec2, cgltf_type_vec2, "TEXCOORD_0", msg);
+        col = usable(col, nv, cgltf_type_vec3, cgltf_type_vec4, "COLOR_0", msg);
+
+        st = unpack(pos, 3, &positions);
+        if (st == PGR_OK && nrm != NULL)
+            st = unpack(nrm, 3, &normals);
+        if (st == PGR_OK && tex != NULL)
+        {
+            st = unpack(tex, 2, &uvs);
+            if (st == PGR_OK)
+                bake_texture_transform(cp->material, uvs, nv);
+        }
+        if (st == PGR_OK && col != NULL)
+            st = unpack(col, 4, &colors);
+    }
     if (st == PGR_OK && normals != NULL && !normalise(normals, nv))
     {
         pgr_warn_once(msg, PGR_WARN_ZERO_NORMAL,
@@ -931,7 +1087,7 @@ read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh
     }
 
     /* The index stream: the primitive's own, or 0 .. nv - 1. */
-    if (st == PGR_OK)
+    if (st == PGR_OK && !draco)
     {
         if (cp->indices != NULL)
         {

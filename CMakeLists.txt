@@ -35,7 +35,7 @@ if(NOT TARGET nano_prc)
                           RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 endif()
 
-set(PRC_GLB_RW_VERSION "0.1.1")
+set(PRC_GLB_RW_VERSION "0.2.0")
 
 # A function called before it is declared is an implicit declaration, which
 # C99 removed: GCC and Clang refuse it, but MSVC only warns (C4013) and the
@@ -65,6 +65,16 @@ if(CGLTF_VERSION STREQUAL "")
 endif()
 
 option(PRC_GLB_RW_BUILD_TESTS "Build prc_glb_rw's CTest tests" ON)
+
+# Draco is C++ and is downloaded when no installed copy is found, so it is
+# off unless asked for. Without it, glb_import refuses Draco-compressed
+# meshes and glb_export does not offer --draco. See cmake/draco.cmake.
+option(PRC_GLB_WITH_DRACO
+       "Read and write KHR_draco_mesh_compression with Google Draco (C++, Apache-2.0)" OFF)
+if(PRC_GLB_WITH_DRACO)
+    enable_language(CXX)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/draco.cmake)
+endif()
 
 add_subdirectory(common)
 add_subdirectory(glb_import)

@@ -1,6 +1,7 @@
 # Third-party notices
 
-prc_glb_rw includes or depends on the following third-party components.
+prc_glb_rw includes or depends on the following third-party components. Draco is used only by a
+build configured to use it.
 
 ## cgltf
 
@@ -50,6 +51,29 @@ string it hands to cgltf; cgltf itself is left unchanged.
 - Known, and unfixed upstream: CVE-2026-102805, unchecked size arithmetic in `stbi_write_png_to_mem`
   and the JPEG and TGA writers. `pgr_image_encode_png` encodes an image only when its width, height
   and channels are sensible and its pixels take at most 2^28 bytes.
+
+## Draco (optional)
+
+- Purpose: decoding and encoding `KHR_draco_mesh_compression` mesh data, only in a build configured
+  with `-DPRC_GLB_WITH_DRACO=ON`. The default build neither downloads nor links it.
+- Not included in this repository. With the option on, CMake uses an installed Draco, or downloads
+  the release below and builds it as a static library, linked into both tools. Only
+  `common/src/draco_shim.cpp` calls it.
+- Version: 1.5.9, the release archive
+  `https://github.com/google/draco/archive/refs/tags/1.5.9.tar.gz`, SHA-256
+  `5b84e0e212ccc7b03ace681760a65a66fe2481a5f54df65154cfc8f0cbb87148` (checked by CMake).
+- Authors: Google Inc. and other contributors.
+- Source: https://github.com/google/draco
+- Licence: Apache License 2.0. The full text is Draco's `LICENSE` file, found in the downloaded
+  source (`_deps/draco-src/LICENSE` under the build directory). Draco has no `NOTICE` file. Its
+  `LICENSE` also covers `docs/assets/js/ASCIIMathML.js` (MIT), which is documentation and is not
+  built. The libraries Draco bundles under `third_party` (Eigen, tinygltf, googletest, filesystem)
+  serve its transcoder and its tests, both switched off here, and are not built either.
+- Binaries built with Draco must be distributed with the Apache 2.0 licence text. Apache 2.0 is
+  compatible with the GNU AGPL v3 that covers prc_glb_rw.
+- Known: OSV-2021-1082 lists Draco versions up to 1.5.7; 1.5.9 is pinned. Draco data from a file is
+  decoded by Draco itself, inside a shim that catches every C++ exception and checks every index
+  the decoder returns against the point count.
 
 ## nanoPRC
 

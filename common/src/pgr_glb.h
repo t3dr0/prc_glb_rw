@@ -19,6 +19,7 @@
 #ifndef PGR_GLB_H
 #define PGR_GLB_H
 
+#include "draco_shim.h"
 #include "pgr_message.h"
 #include "pgr_scene.h"
 
@@ -39,6 +40,13 @@ typedef struct pgr_glb_write_options
 {
     pgr_messages *messages;  /* NULL: messages go to stderr */
     const char *generator;   /* asset.generator; NULL: "prc_glb_rw <version>" */
+    /* Non-zero: compress each triangle primitive with Draco
+       (KHR_draco_mesh_compression, listed as required), with draco_options,
+       or Draco's defaults when that is NULL. Line primitives are never
+       compressed. Needs a build with Draco: otherwise pgr_glb_write
+       returns PGR_ERR_UNSUPPORTED. */
+    int draco;
+    const ds_encode_options *draco_options;
 } pgr_glb_write_options;
 
 /* Write scene as binary glTF when path ends in .glb, otherwise as JSON
@@ -51,5 +59,14 @@ int pgr_glb_write(const pgr_scene *scene, const char *path, const pgr_glb_write_
    to a multiple of 4 bytes. Returns PGR_OK or PGR_ERR_WRITE. */
 int pgr_glb_write_container(const char *path, const void *json, size_t json_size,
                             const void *bin, size_t bin_size);
+
+/* The Draco unique id an entry of a primitive's KHR_draco_mesh_compression
+   attribute map gives, or -1. cgltf reads that map with its ordinary
+   attribute parser, so each id arrives as a pointer to the accessor with
+   that index: the id is the pointer's index, and an id at or past the
+   accessor count makes cgltf reject the file. */
+struct cgltf_data;
+struct cgltf_attribute;
+int pgr_draco_attribute_id(const struct cgltf_data *data, const struct cgltf_attribute *at);
 
 #endif

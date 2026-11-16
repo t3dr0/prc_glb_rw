@@ -38,7 +38,9 @@
  *     JPEG bytes, with the texture coordinates' v turned over (v' = 1 - v)
  *     for PRC's image origin (--no-colors and --no-texture leave them out).
  *
- * Not yet done: Draco-compressed meshes.
+ * Draco-compressed meshes (KHR_draco_mesh_compression) are read in a build
+ * with Draco (-DPRC_GLB_WITH_DRACO=ON); without it, a file whose meshes
+ * are only in Draco form is refused with exit code 3.
  *
  * Usage:
  *   nano_prc_glb_import <input.glb|input.gltf> [output.prc] [output.pdf] [options]
