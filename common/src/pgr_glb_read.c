@@ -128,8 +128,8 @@ check_required_extensions(const cgltf_data *data, pgr_messages *msg)
 
         if (strcmp(ext, "KHR_draco_mesh_compression") == 0)
         {
-            pgr_error(msg, "the file uses KHR_draco_mesh_compression; "
-                      "rebuild with -DPRC_GLB_WITH_DRACO=ON to read it");
+            pgr_error(msg, "the file uses KHR_draco_mesh_compression, "
+                      "which this version does not read");
             return PGR_ERR_UNSUPPORTED;
         }
         for (k = 0; k < sizeof(accepted_required) / sizeof(accepted_required[0]); k++)
@@ -897,8 +897,8 @@ read_primitive(const cgltf_data *data, const cgltf_primitive *cp, pgr_mesh *mesh
     }
     if (cp->has_draco_mesh_compression && pos->buffer_view == NULL && !pos->is_sparse)
     {
-        pgr_error(msg, "a primitive is stored only with KHR_draco_mesh_compression; "
-                  "rebuild with -DPRC_GLB_WITH_DRACO=ON to read it");
+        pgr_error(msg, "a primitive is stored only with KHR_draco_mesh_compression, "
+                  "which this version does not read");
         return PGR_ERR_UNSUPPORTED;
     }
     if (pos->type != cgltf_type_vec3 || pos->count > 0xffffffffu)

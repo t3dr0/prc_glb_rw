@@ -330,7 +330,9 @@ test_refused_and_rejected(void)
 
     load(&r, "requires_draco", make_draco);
     PGR_CHECK(r.status == PGR_ERR_UNSUPPORTED);
-    PGR_CHECK(strstr(r.last, "PRC_GLB_WITH_DRACO") != NULL);
+    PGR_CHECK(strstr(r.last, "KHR_draco_mesh_compression") != NULL);
+    /* No build option reads Draco yet, so the message must not point at one */
+    PGR_CHECK(strstr(r.last, "PRC_GLB_WITH_DRACO") == NULL);
     pgr_scene_free(&r.scene);
 
     /* An extension that only changes appearance is accepted. */

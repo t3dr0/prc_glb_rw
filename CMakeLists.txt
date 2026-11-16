@@ -35,7 +35,7 @@ if(NOT TARGET nano_prc)
                           RUNTIME_OUTPUT_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
 endif()
 
-set(PRC_GLB_RW_VERSION "0.1.0")
+set(PRC_GLB_RW_VERSION "0.1.1")
 
 # A function called before it is declared is an implicit declaration, which
 # C99 removed: GCC and Clang refuse it, but MSVC only warns (C4013) and the
