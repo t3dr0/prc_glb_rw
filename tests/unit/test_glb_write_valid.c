@@ -307,6 +307,7 @@ test_round_trip(const char *path, int glb)
 
     memset(&msg, 0, sizeof(msg));
     msg.fn = quiet;
+    memset(&wopt, 0, sizeof(wopt));
     wopt.messages = &msg;
     wopt.generator = NULL;
     ropt.messages = &msg;
@@ -386,6 +387,7 @@ test_edge_cases(void)
 
     memset(&msg, 0, sizeof(msg));
     msg.fn = quiet;
+    memset(&wopt, 0, sizeof(wopt));
     wopt.messages = &msg;
     wopt.generator = "custom generator";
 
