@@ -1,7 +1,7 @@
 # Third-party notices
 
 prc_glb_rw includes or depends on the following third-party components. Draco is used only by a
-build configured to use it.
+build configured to use it, and the Khronos sample only by the tests.
 
 ## cgltf
 
@@ -74,6 +74,18 @@ string it hands to cgltf; cgltf itself is left unchanged.
 - Known: OSV-2021-1082 lists Draco versions up to 1.5.7; 1.5.9 is pinned. Draco data from a file is
   decoded by Draco itself, inside a shim that catches every C++ exception and checks every index
   the decoder returns against the point count.
+
+## Khronos glTF sample: Box (test data)
+
+- Purpose: test data only, read by `tests/unit/test_draco_khronos.c` in builds with Draco, as Draco
+  data written by an encoder other than this project's. Not built into either tool.
+- Location: `tests/data/khronos_box_draco`: `Box.gltf` and `Box.bin`, the `glTF-Draco` variant of
+  the model, unmodified, with the model's `LICENSE.md`.
+- Source: https://github.com/KhronosGroup/glTF-Sample-Assets, `Models/Box/glTF-Draco`, at commit
+  `8f492390ddc7a2ae221a1369ef560589cf8c70fb`.
+- Author: Cesium, 2017.
+- Licence: Creative Commons Attribution 4.0 International (CC-BY-4.0),
+  https://creativecommons.org/licenses/by/4.0/legalcode
 
 ## nanoPRC
 

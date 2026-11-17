@@ -32,7 +32,7 @@ target_compile_definitions(test_info PRIVATE PGR_EXPECTED_CGLTF_VERSION="${CGLTF
 # the shim and the round trips through it only where Draco is built in.
 target_sources(test_draco_common PRIVATE fixtures.c)
 if(PRC_GLB_WITH_DRACO)
-    foreach(name test_draco_shim test_draco_round_trip)
+    foreach(name test_draco_shim test_draco_round_trip test_draco_khronos)
         add_executable(${name} unit/${name}.c)
         target_link_libraries(${name} PRIVATE prc_glb_rw_common)
         target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -42,6 +42,10 @@ if(PRC_GLB_WITH_DRACO)
         endif()
     endforeach()
     target_sources(test_draco_round_trip PRIVATE fixtures.c scene_compare.c)
+    # Draco data from another encoder: the Khronos glTF sample Box, read in
+    # place from the source tree (see data/khronos_box_draco/LICENSE.md).
+    target_compile_definitions(test_draco_khronos PRIVATE
+        PGR_KHRONOS_BOX="${CMAKE_CURRENT_SOURCE_DIR}/data/khronos_box_draco/Box.gltf")
 endif()
 
 # The read test's glTF files are made by fixtures.c, independently of the

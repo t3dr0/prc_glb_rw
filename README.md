@@ -180,7 +180,8 @@ so it is optional: configure with `-DPRC_GLB_WITH_DRACO=ON` (see [Building](#bui
 **Reading** (`nano_prc_glb_import`). A Draco primitive is decoded, and the decoded points and
 triangles replace the primitive's own accessors, since Draco may renumber, merge or split points.
 `POSITION`, `NORMAL`, `TEXCOORD_0` and `COLOR_0` are read from the Draco data. When the Draco data
-cannot be decoded the file is refused (exit code 2), even if an uncompressed copy is present.
+cannot be decoded the file is refused (exit code 2), even if an uncompressed copy is present. The
+tests read Draco data from another encoder too: the Khronos glTF sample Box (`tests/data`).
 
 **Writing** (`nano_prc_glb_export --draco`). Each triangle primitive is compressed; line primitives
 are left as they are. No uncompressed copy is written, so the extension is listed as required. The
